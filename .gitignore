@@ -1,0 +1,33 @@
+# Local environments and Python caches
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+*.zip
+
+# Local orchestration/tracking state
+.metaflow/
+mlruns/
+mlflow.db
+*.sqlite
+*.sqlite3
+*.db
+reports/
+outputs/
+models/
+artifacts/
+processed/
+data/processed/
+
+# Local DVC storage and cache
+.dvc/cache/
+local_dvc_store/
+
+# Local environment files and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+/data

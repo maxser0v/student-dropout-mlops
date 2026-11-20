@@ -1,0 +1,541 @@
+"""Local, linear Metaflow training and gated MLflow candidate-registration flow."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import importlib.metadata
+import subprocess
+import sys
+from functools import wraps
+from pathlib import Path
+from typing import Any
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import mlflow
+import mlflow.sklearn
+import numpy as np
+import pandas as pd
+import yaml
+from mlflow import MlflowClient
+from mlflow.exceptions import MlflowException
+from mlflow.protos.databricks_pb2 import ErrorCode
+from mlflow.models import infer_signature
+from metaflow import FlowSpec, Parameter, card, current, step
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(ROOT / "src"))
+
+from dropout.features import make_features
+from dropout.gates import evaluate_release_gate
+from dropout.model_io import load_verified_bundle
+from dropout.training import (
+    assert_feature_schema,
+    build_pipeline,
+    choose_threshold,
+    evaluate_probabilities,
+    positive_class_probability,
+    threshold_choice_dict,
+)
+from dropout.validation import FEATURE_COLUMNS, TRAIN_COHORTS, VALIDATION_COHORTS, load_training_data, verify_manifest
+
+
+def _json_dump(path: Path, payload: Any) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+    return path
+
+
+def _load_config(path: str | Path) -> tuple[dict[str, Any], str]:
+    resolved = Path(path).resolve()
+    payload = resolved.read_bytes()
+    config = yaml.safe_load(payload)
+    if not isinstance(config, dict):
+        raise ValueError("model configuration must be a YAML mapping")
+    expected = tuple(config.get("feature_schema", {}).get("columns", ()))
+    if expected != FEATURE_COLUMNS:
+        raise ValueError("configured feature schema does not match the explicit model feature allowlist")
+    return config, hashlib.sha256(payload).hexdigest()
+
+
+def _set_tracking(uri: str) -> MlflowClient:
+    mlflow.set_tracking_uri(uri)
+    return MlflowClient(tracking_uri=uri)
+
+
+def _experiment(client: MlflowClient, name: str, tracking_uri: str) -> str:
+    found = client.get_experiment_by_name(name)
+    if found is not None:
+        return found.experiment_id
+    if tracking_uri.startswith(("sqlite:", "file:")):
+        artifact_root = (ROOT / "reports" / "mlflow" / "artifacts").resolve()
+        artifact_root.mkdir(parents=True, exist_ok=True)
+        return client.create_experiment(name, artifact_location=artifact_root.as_uri())
+    return client.create_experiment(name)
+
+
+def _in_run(run_id: str, operation) -> Any:
+    """Reopen one existing run for a step; keep it RUNNING until flow end."""
+    mlflow.start_run(run_id=run_id)
+    try:
+        result = operation()
+    except BaseException:
+        mlflow.end_run(status="FAILED")
+        raise
+    else:
+        mlflow.end_run(status="RUNNING")
+        return result
+
+
+def _failure_guard(function):
+    """Mark this flow's only MLflow run failed if any step work raises."""
+    @wraps(function)
+    def wrapped(self, *args, **kwargs):
+        try:
+            return function(self, *args, **kwargs)
+        except BaseException:
+            run_id = getattr(self, "mlflow_run_id", None)
+            if run_id:
+                try:
+                    _set_tracking(getattr(self, "resolved_tracking_uri", self.tracking_uri)).set_terminated(run_id, status="FAILED")
+                except Exception:
+                    pass
+            raise
+    return wrapped
+
+
+def _git_lineage() -> dict[str, Any]:
+    def call(*args: str) -> str | None:
+        try:
+            return subprocess.check_output(["git", *args], cwd=ROOT, text=True, stderr=subprocess.DEVNULL).strip()
+        except (OSError, subprocess.CalledProcessError):
+            return None
+
+    status = call("status", "--porcelain")
+    return {"git_commit": call("rev-parse", "HEAD"), "git_dirty": bool(status), "git_status_entries": len(status.splitlines()) if status else 0}
+
+
+def _data_lineage(data_dir: Path, manifest: dict[str, Any]) -> dict[str, Any]:
+    hashes = {name: info["sha256"] for name, info in manifest.get("files", {}).items()}
+    canonical_data_dir = (ROOT / "data").resolve()
+    is_dvc_tracked_input = data_dir.resolve() == canonical_data_dir
+    pointer = ROOT / "data.dvc" if is_dvc_tracked_input else None
+    required = {"data/raw/lms_snapshots.csv", "data/raw/student_outcomes.csv"}
+    complete = required.issubset(hashes) and all(
+        isinstance(hashes.get(name), str) and re.fullmatch(r"[0-9a-fA-F]{64}", hashes[name])
+        for name in required
+    )
+    return {
+        "dvc_pointer_path": str(pointer.relative_to(ROOT)) if pointer is not None else None,
+        "dvc_pointer_sha256": hashlib.sha256(pointer.read_bytes()).hexdigest() if pointer is not None and pointer.is_file() else None,
+        "data_file_sha256": hashes,
+        "complete_data_checksums": bool(complete),
+        "canonical_dvc_tracked_input": is_dvc_tracked_input,
+        "data_manifest_sha256": hashlib.sha256((data_dir / "manifest.json").read_bytes()).hexdigest(),
+    }
+
+
+def _plot_confusion(metrics: dict[str, Any], path: Path) -> Path | None:
+    matrix = metrics.get("confusion_matrix")
+    if matrix is None:
+        return None
+    fig, ax = plt.subplots(figsize=(4.5, 4))
+    image = ax.imshow(matrix, cmap="Blues")
+    ax.set(xticks=[0, 1], yticks=[0, 1], xticklabels=["retained", "withdrawn"], yticklabels=["retained", "withdrawn"], xlabel="Predicted", ylabel="Observed", title="Validation confusion matrix")
+    for (row, col), value in np.ndenumerate(np.asarray(matrix)):
+        ax.text(col, row, str(value), ha="center", va="center", color="black")
+    fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
+    fig.tight_layout()
+    fig.savefig(path, dpi=140)
+    plt.close(fig)
+    return path
+
+
+def _plot_reliability(metrics: dict[str, Any], path: Path) -> Path:
+    bins = metrics["reliability_bins"]
+    occupied = [entry for entry in bins if entry["count"]]
+    fig, ax = plt.subplots(figsize=(5.5, 4.5))
+    ax.plot([0, 1], [0, 1], linestyle="--", color="grey", label="perfect agreement")
+    if occupied:
+        ax.plot([entry["mean_probability"] for entry in occupied], [entry["observed_rate"] for entry in occupied], marker="o", label="validation")
+        for entry in occupied:
+            ax.annotate(str(entry["count"]), (entry["mean_probability"], entry["observed_rate"]), xytext=(3, 4), textcoords="offset points", fontsize=8)
+    ax.set(xlim=(0, 1), ylim=(0, 1), xlabel="Mean predicted probability", ylabel="Observed withdrawal rate", title="Validation reliability (labels are counts)")
+    ax.legend(loc="best")
+    fig.tight_layout()
+    fig.savefig(path, dpi=140)
+    plt.close(fig)
+    return path
+
+
+def _download_bundle(client: MlflowClient, run_id: str) -> dict[str, Any]:
+    local_path = mlflow.artifacts.download_artifacts(run_id=run_id, artifact_path="deployment_bundle.json")
+    return json.loads(Path(local_path).read_text(encoding="utf-8"))
+
+
+def _resolve_champion_bundle(client: MlflowClient, model_name: str):
+    """Return the current champion and its bundle; only absence of alias is optional."""
+    try:
+        registered = client.get_model_version_by_alias(model_name, "champion")
+    except MlflowException as exc:
+        if exc.error_code == ErrorCode.Name(ErrorCode.INVALID_PARAMETER_VALUE) and "alias" in str(exc).lower() and "not found" in str(exc).lower():
+            return None, None
+        if exc.error_code == ErrorCode.Name(ErrorCode.RESOURCE_DOES_NOT_EXIST):
+            try:
+                client.get_registered_model(model_name)
+            except MlflowException as missing_model:
+                if missing_model.error_code == ErrorCode.Name(ErrorCode.RESOURCE_DOES_NOT_EXIST):
+                    return None, None
+                raise
+            raise
+        raise
+    # Do not catch errors after alias resolution: damaged/inaccessible champion artifacts
+    # must stop the gate instead of silently disabling challenger comparisons.
+    return registered, _download_bundle(client, registered.run_id)
+
+
+class TrainFlow(FlowSpec):
+    data_dir = Parameter("data-dir", default="data", help="Read-only DVC-restored data directory")
+    config_path = Parameter("config-path", default="config/model.yaml", help="Frozen model and release-gate configuration")
+    tracking_uri = Parameter("tracking-uri", default="sqlite:///reports/mlflow/mlflow.db", help="MLflow tracking and registry URI")
+    experiment_name = Parameter("experiment-name", default="student-dropout", help="MLflow experiment name")
+
+    @_failure_guard
+    @card
+    @step
+    def start(self):
+        self.flow_run_id = str(current.run_id)
+        self.resolved_data_dir = str(Path(self.data_dir).resolve())
+        self.resolved_config_path = str(Path(self.config_path).resolve())
+        self.resolved_tracking_uri = self.tracking_uri
+        if self.tracking_uri.startswith("sqlite:///reports/"):
+            relative_db = self.tracking_uri.removeprefix("sqlite:///")
+            self.resolved_tracking_uri = "sqlite:///" + str((ROOT / relative_db).resolve())
+        self.config, self.config_sha256 = _load_config(self.resolved_config_path)
+        self.seed = int(self.config["seed"])
+        client = _set_tracking(self.resolved_tracking_uri)
+        experiment_id = _experiment(client, self.experiment_name, self.resolved_tracking_uri)
+        tags = {
+            "synthetic": "true",
+            "metaflow.flow": str(current.flow_name),
+            "metaflow.run_id": self.flow_run_id,
+            "feature_schema_version": str(self.config["feature_schema"]["version"]),
+            "target_version": str(self.config["target"]["version"]),
+        }
+        run = client.create_run(experiment_id, run_name=f"dropout-{self.flow_run_id}", tags=tags)
+        self.mlflow_run_id = run.info.run_id
+        self.report_dir = str((ROOT / "reports" / self.flow_run_id).resolve())
+        Path(self.report_dir).mkdir(parents=True, exist_ok=True)
+        self.next(self.validate)
+
+    @_failure_guard
+    @card
+    @step
+    def validate(self):
+        client = _set_tracking(self.resolved_tracking_uri)
+        try:
+            manifest = verify_manifest(self.resolved_data_dir)
+            training_data = load_training_data(self.resolved_data_dir)
+            snapshots = training_data.snapshots
+            cohorts = snapshots["cohort_id"].astype(str)
+            train_mask = cohorts.isin(TRAIN_COHORTS).to_numpy()
+            validation_mask = cohorts.isin(VALIDATION_COHORTS).to_numpy()
+            if not train_mask.any() or not validation_mask.any():
+                raise ValueError("both train and validation cohorts must have mature supervised labels")
+
+            # Keep only allowed cohorts from this point forward. Test rows and labels are discarded.
+            train_snapshots = snapshots.loc[train_mask].reset_index(drop=True)
+            validation_snapshots = snapshots.loc[validation_mask].reset_index(drop=True)
+            self.X_train = make_features(train_snapshots, validate=False)
+            self.X_validation = make_features(validation_snapshots, validate=False)
+            self.y_train = training_data.labels.loc[train_mask].reset_index(drop=True).astype(int)
+            self.y_validation = training_data.labels.loc[validation_mask].reset_index(drop=True).astype(int)
+            assert_feature_schema(self.X_train)
+            assert_feature_schema(self.X_validation)
+            if len(self.X_train) != len(self.y_train) or len(self.X_validation) != len(self.y_validation):
+                raise ValueError("features and labels are not aligned")
+            self.exclusions = dict(training_data.exclusions)
+            self.split_metadata = {
+                "train": {"cohorts": list(TRAIN_COHORTS), "rows": int(len(self.X_train)), "positive_count": int(self.y_train.sum())},
+                "validation": {"cohorts": list(VALIDATION_COHORTS), "rows": int(len(self.X_validation)), "positive_count": int(self.y_validation.sum())},
+                "student_overlap": training_data.student_overlap,
+                "exclusions": self.exclusions,
+            }
+            self.manifest = manifest
+            self.lineage = {**_git_lineage(), **_data_lineage(Path(self.resolved_data_dir), manifest)}
+            self.dependency_versions = {
+                "python": sys.version.split()[0],
+                "pandas": importlib.metadata.version("pandas"),
+                "scikit_learn": importlib.metadata.version("scikit-learn"),
+                "mlflow": importlib.metadata.version("mlflow"),
+                "metaflow": importlib.metadata.version("metaflow"),
+            }
+
+            def log_validation():
+                mlflow.log_params({
+                    "seed": self.seed,
+                    "feature_schema_version": self.config["feature_schema"]["version"],
+                    "target_version": self.config["target"]["version"],
+                    "config_sha256": self.config_sha256,
+                    "data_manifest_sha256": self.lineage["data_manifest_sha256"],
+                    "dvc_pointer_sha256": self.lineage["dvc_pointer_sha256"] or "unavailable",
+                    "train_rows": len(self.X_train),
+                    "validation_rows": len(self.X_validation),
+                    "train_prevalence": round(float(self.y_train.mean()), 8),
+                    "validation_prevalence": round(float(self.y_validation.mean()), 8),
+                    "python_version": self.dependency_versions["python"],
+                    "pandas_version": self.dependency_versions["pandas"],
+                    "scikit_learn_version": self.dependency_versions["scikit_learn"],
+                    "mlflow_version": self.dependency_versions["mlflow"],
+                    "metaflow_version": self.dependency_versions["metaflow"],
+                })
+                mlflow.set_tags({"git.commit": self.lineage["git_commit"] or "unavailable", "git.dirty": str(self.lineage["git_dirty"]).lower()})
+                _json_dump(Path(self.report_dir) / "manifest.json", self.manifest)
+                _json_dump(Path(self.report_dir) / "lineage.json", self.lineage)
+                _json_dump(Path(self.report_dir) / "split_metadata.json", self.split_metadata)
+                _json_dump(Path(self.report_dir) / "dependency_versions.json", self.dependency_versions)
+                for artifact in ("manifest.json", "lineage.json", "split_metadata.json", "dependency_versions.json"):
+                    mlflow.log_artifact(str(Path(self.report_dir) / artifact), artifact_path="provenance")
+                mlflow.log_artifact(self.resolved_config_path, artifact_path="provenance")
+
+            _in_run(self.mlflow_run_id, log_validation)
+        except BaseException:
+            client.set_terminated(self.mlflow_run_id, status="FAILED")
+            raise
+        self.next(self.prepare)
+
+    @_failure_guard
+    @card
+    @step
+    def prepare(self):
+        # All feature construction happened in validate via the shared allowlisted feature function.
+        self.train_prevalence = float(self.y_train.mean())
+        self.validation_prevalence = float(self.y_validation.mean())
+        self.feature_columns = list(self.X_train.columns)
+        self.next(self.train)
+
+    @_failure_guard
+    @card
+    @step
+    def train(self):
+        _set_tracking(self.resolved_tracking_uri)
+        model = build_pipeline(seed=self.seed)
+        model.fit(self.X_train, self.y_train)
+        self.model = model
+        self.train_parameters = {key: str(value) for key, value in model.get_params(deep=True).items()}
+        self.training_probability_summary = {
+            "rows": int(len(self.X_train)),
+            "classes": [int(value) for value in model.classes_],
+            "train_prevalence": self.train_prevalence,
+        }
+
+        def log_training():
+            mlflow.log_params(self.train_parameters)
+            example = self.X_train.head(5)
+            example_output = np.asarray(model.predict_proba(example), dtype=float)
+            signature = infer_signature(example, example_output)
+            model_info = mlflow.sklearn.log_model(
+                model,
+                name="model",
+                input_example=example,
+                signature=signature,
+                pip_requirements=["scikit-learn==1.9.1", "pandas>=2.3,<3"],
+                metadata={"target_version": self.config["target"]["version"], "feature_schema_version": self.config["feature_schema"]["version"]},
+                skops_trusted_types=["numpy.dtype"],
+            )
+            return model_info.model_uri
+
+        self.logged_model_uri = _in_run(self.mlflow_run_id, log_training)
+        self.next(self.evaluate)
+
+    @_failure_guard
+    @card
+    @step
+    def evaluate(self):
+        _set_tracking(self.resolved_tracking_uri)
+        probabilities = positive_class_probability(self.model, self.X_validation)
+        threshold_config = self.config["threshold_selection"]
+        choice = choose_threshold(
+            self.y_validation,
+            probabilities,
+            minimum_precision=float(threshold_config["minimum_precision"]),
+            lower=float(threshold_config["lower"]),
+            upper=float(threshold_config["upper"]),
+            step=float(threshold_config["step"]),
+        )
+        self.threshold_choice = threshold_choice_dict(choice)
+        self.threshold = choice.threshold
+        self.validation_metrics = evaluate_probabilities(
+            self.y_validation,
+            probabilities,
+            choice.threshold,
+            train_prevalence=self.train_prevalence,
+        )
+        self.candidate_metadata = {
+            **self.validation_metrics,
+            "target_version": self.config["target"]["version"],
+            "feature_schema_version": self.config["feature_schema"]["version"],
+            "threshold_choice": self.threshold_choice,
+            "train_prevalence": self.train_prevalence,
+            "config_version": self.config["config_version"],
+            "config_sha256": self.config_sha256,
+            "feature_columns": self.feature_columns,
+            "mlflow_run_id": self.mlflow_run_id,
+            "metaflow_run_id": self.flow_run_id,
+            "lineage": self.lineage,
+            "split_metadata": self.split_metadata,
+        }
+        evaluation_path = _json_dump(Path(self.report_dir) / "validation_metrics.json", self.candidate_metadata)
+        confusion_plot = _plot_confusion(self.validation_metrics, Path(self.report_dir) / "confusion_matrix.png")
+        reliability_plot = _plot_reliability(self.validation_metrics, Path(self.report_dir) / "reliability.png")
+
+        client = _set_tracking(self.resolved_tracking_uri)
+
+        def log_evaluation():
+            metric_values = {
+                key: float(value)
+                for key, value in self.validation_metrics.items()
+                if key in {"average_precision", "roc_auc", "precision", "recall", "f1", "brier_score", "train_prevalence_brier_score", "prevalence"}
+                and value is not None
+            }
+            metric_values.update({"validation_rows": self.validation_metrics["support"]})
+            if self.threshold is not None:
+                metric_values["threshold"] = self.threshold
+            mlflow.log_metrics(metric_values)
+            mlflow.log_dict(self.candidate_metadata, "validation_metrics.json")
+            mlflow.log_dict({"threshold_choice": self.threshold_choice, "metrics": self.validation_metrics}, "evaluation.json")
+            mlflow.log_artifact(str(evaluation_path))
+            mlflow.log_artifact(str(reliability_plot))
+            if confusion_plot is not None:
+                mlflow.log_artifact(str(confusion_plot))
+
+        _in_run(self.mlflow_run_id, log_evaluation)
+        self.next(self.gate)
+
+    @_failure_guard
+    @card
+    @step
+    def gate(self):
+        client = _set_tracking(self.resolved_tracking_uri)
+        champion_metadata = None
+        champion_version = None
+        registered, old_bundle = _resolve_champion_bundle(client, self.config["model_name"])
+        if registered is not None:
+            champion_version = str(registered.version)
+            champion_metadata = {
+                "target_version": old_bundle.get("target_version"),
+                "feature_schema_version": old_bundle.get("feature_schema_version"),
+            }
+            if (
+                champion_metadata["target_version"] == self.candidate_metadata["target_version"]
+                and champion_metadata["feature_schema_version"] == self.candidate_metadata["feature_schema_version"]
+            ):
+                champion_model, old_bundle = load_verified_bundle(
+                    client,
+                    self.config["model_name"],
+                    champion_version,
+                    expected_target_version=self.candidate_metadata["target_version"],
+                    expected_feature_schema_version=self.candidate_metadata["feature_schema_version"],
+                )
+                champion_probabilities = positive_class_probability(champion_model, self.X_validation)
+                champion_metrics = evaluate_probabilities(
+                    self.y_validation,
+                    champion_probabilities,
+                    old_bundle["threshold"],
+                    train_prevalence=float(old_bundle["train_prevalence"]),
+                )
+                champion_metadata.update(champion_metrics)
+                champion_metadata["target_version"] = old_bundle["target_version"]
+                champion_metadata["feature_schema_version"] = old_bundle["feature_schema_version"]
+            else:
+                champion_metadata["version"] = champion_version
+
+        self.gate_report = evaluate_release_gate(
+            self.candidate_metadata,
+            self.config,
+            lineage_passed=bool(
+                self.lineage.get("dvc_pointer_sha256")
+                and self.lineage.get("complete_data_checksums")
+                and self.lineage.get("data_manifest_sha256")
+            ),
+            champion=champion_metadata,
+        )
+        self.gate_report["champion_version"] = champion_version
+        self.gate_report["mlflow_run_id"] = self.mlflow_run_id
+        self.gate_report["metaflow_run_id"] = self.flow_run_id
+        gate_path = _json_dump(Path(self.report_dir) / "gate_report.json", self.gate_report)
+
+        def log_gate():
+            mlflow.set_tag("release_gate", self.gate_report["decision"])
+            mlflow.log_dict(self.gate_report, "gate_report.json")
+            mlflow.log_artifact(str(gate_path))
+            mlflow.log_metric("release_gate_passed", int(self.gate_report["passed"]))
+
+        _in_run(self.mlflow_run_id, log_gate)
+        self.next(self.register)
+
+    @_failure_guard
+    @card
+    @step
+    def register(self):
+        self.registered_version = None
+        self.registration_status = "blocked_by_release_gate"
+        if self.gate_report["passed"]:
+            client = _set_tracking(self.resolved_tracking_uri)
+            registered = mlflow.register_model(self.logged_model_uri, self.config["model_name"], await_registration_for=0)
+            self.registered_version = str(registered.version)
+            self.registration_status = "registered_candidate"
+            bundle = {
+                "bundle_version": "1.0",
+                "model_name": self.config["model_name"],
+                "model_version": self.registered_version,
+                "model_uri": f"models:/{self.config['model_name']}/{self.registered_version}",
+                "mlflow_run_id": self.mlflow_run_id,
+                "metaflow_run_id": self.flow_run_id,
+                "threshold": self.threshold,
+                "target_version": self.config["target"]["version"],
+                "target_description": self.config["target"]["description"],
+                "feature_schema_version": self.config["feature_schema"]["version"],
+                "feature_columns": self.feature_columns,
+                "config_version": self.config["config_version"],
+                "config_sha256": self.config_sha256,
+                "train_prevalence": self.train_prevalence,
+                "gate_passed": True,
+                "gate_report_artifact": "gate_report.json",
+                "validation_metrics": self.validation_metrics,
+                "lineage": self.lineage,
+                "created_at_utc": pd.Timestamp.now(tz="UTC").isoformat(),
+            }
+            bundle_path = _json_dump(Path(self.report_dir) / "deployment_bundle.json", bundle)
+            client.log_artifact(self.mlflow_run_id, str(bundle_path))
+            client.set_model_version_tag(self.config["model_name"], self.registered_version, "gate_passed", "true")
+            client.set_model_version_tag(self.config["model_name"], self.registered_version, "feature_schema_version", str(bundle["feature_schema_version"]))
+            client.set_model_version_tag(self.config["model_name"], self.registered_version, "target_version", str(bundle["target_version"]))
+            client.set_model_version_tag(self.config["model_name"], self.registered_version, "bundle_artifact", "deployment_bundle.json")
+        self.next(self.end)
+
+    @_failure_guard
+    @card
+    @step
+    def end(self):
+        client = _set_tracking(self.resolved_tracking_uri)
+        client.set_terminated(self.mlflow_run_id, status="FINISHED")
+        self.flow_summary = {
+            "metaflow_run_id": self.flow_run_id,
+            "mlflow_run_id": self.mlflow_run_id,
+            "gate_decision": self.gate_report["decision"],
+            "registration_status": self.registration_status,
+            "model_version": self.registered_version,
+            "report_dir": self.report_dir,
+        }
+        print(json.dumps(self.flow_summary, sort_keys=True))
+
+
+if __name__ == "__main__":
+    TrainFlow()

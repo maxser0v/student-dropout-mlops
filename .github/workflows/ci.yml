@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks-and-arm64-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      MLFLOW_DISABLE_AGENT_HINT: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install locked dependencies
+        run: python -m pip install --require-hashes -r requirements.lock.txt
+
+      - name: Generate deterministic fictional dataset
+        run: python scripts/generate_synthetic_data.py
+
+      - name: Verify data bundle
+        run: python scripts/verify_synthetic_data.py
+
+      - name: Run automated checks
+        run: python -m pytest -q
+
+      - name: Prepare isolated smoke-test configuration
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          config = yaml.safe_load(Path("config/model.yaml").read_text(encoding="utf-8"))
+          config["model_name"] = "student-dropout-ci"
+          Path("/tmp/ci-model.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+          PY
+
+      - name: Run offline training-flow smoke test
+        run: >-
+          python flows/train_flow.py run
+          --data-dir data
+          --config-path /tmp/ci-model.yaml
+          --tracking-uri sqlite:////tmp/student-dropout-ci.db
+
+      - name: Set up QEMU for the pinned ARM64 image
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build ARM64 container image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/arm64
+          push: false
+          load: true
+          tags: student-dropout:ci

@@ -1,0 +1,18 @@
+{
+  "status": "passed",
+  "snapshot_rows": 3600,
+  "outcome_rows": 3600,
+  "cohort_rows": {
+    "2023_S1": 600,
+    "2023_S2": 600,
+    "2024_S1": 600,
+    "2024_S2": 600,
+    "2025_S1": 600,
+    "2025_S2": 600
+  },
+  "withdrawals": 853,
+  "invalid_fixture": "rejected",
+  "drift_fixture": "schema-valid; drift detection planned",
+  "checksums": "matched",
+  "repeat_generation": "identical SHA-256 for every delivered data file"
+}

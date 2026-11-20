@@ -1,0 +1,86 @@
+x-runtime: &runtime
+  image: student-dropout:local
+  platform: linux/arm64
+  build:
+    context: .
+    dockerfile: Dockerfile
+  working_dir: /app
+
+services:
+  mlflow:
+    <<: *runtime
+    command:
+      - mlflow
+      - server
+      - --host
+      - 0.0.0.0
+      - --port
+      - "5000"
+      - --backend-store-uri
+      - sqlite:////mlflow/mlflow.db
+      - --artifacts-destination
+      - /mlflow/artifacts
+      - --allowed-hosts
+      - localhost:5000,127.0.0.1:5000,mlflow:5000
+    ports:
+      - "127.0.0.1:5000:5000"
+    volumes:
+      - mlflow_data:/mlflow
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3).read()"
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+
+  train:
+    <<: *runtime
+    profiles: [jobs]
+    command:
+      - python
+      - flows/train_flow.py
+      - run
+      - --data-dir
+      - /app/data
+      - --config-path
+      - /app/config/model.yaml
+      - --tracking-uri
+      - http://mlflow:5000
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_ALLOW_MODEL_CODE_EXECUTION: "false"
+      METAFLOW_USER: student-mlops
+      METAFLOW_DATASTORE_SYSROOT_LOCAL: "${PWD}"
+      METAFLOW_CARD_LOCALROOT: "${PWD}/.metaflow/mf.cards"
+    volumes:
+      - ./data:/app/data:ro
+      - ./data.dvc:/app/data.dvc:ro
+      - type: bind
+        source: ./.metaflow
+        target: "${PWD}/.metaflow"
+      - ./reports:/app/reports
+    depends_on:
+      mlflow:
+        condition: service_healthy
+
+  score:
+    <<: *runtime
+    profiles: [jobs]
+    entrypoint: [python, -m, dropout.score]
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_ALLOW_MODEL_CODE_EXECUTION: "false"
+    volumes:
+      - ./data:/app/data:ro
+      - ./outputs:/app/outputs
+    depends_on:
+      mlflow:
+        condition: service_healthy
+
+volumes:
+  mlflow_data:
