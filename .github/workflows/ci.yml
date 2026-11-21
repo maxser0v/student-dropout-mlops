@@ -56,6 +56,15 @@ jobs:
       - name: Set up QEMU for the pinned ARM64 image
         uses: docker/setup-qemu-action@v4
 
+      - name: Compute verified source provenance
+        id: provenance
+        run: >-
+          python scripts/demo_provenance.py
+          --source-label github-actions
+          --verify-commit "$GITHUB_SHA"
+          --require-clean
+          --github-output "$GITHUB_OUTPUT"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -68,3 +77,14 @@ jobs:
           push: false
           load: true
           tags: student-dropout:ci
+          build-args: |
+            GIT_COMMIT=${{ steps.provenance.outputs.git_commit }}
+            GIT_DIRTY=${{ steps.provenance.outputs.git_dirty }}
+            SOURCE_TREE_SHA256=${{ steps.provenance.outputs.source_tree_sha256 }}
+            SOURCE_REVISION_SOURCE=github-actions
+            SOURCE_TREE_HASH_ALGORITHM=sha256
+
+      - name: Verify the image default user is non-root
+        run: >-
+          docker run --rm --platform linux/arm64 --entrypoint python student-dropout:ci
+          -c 'import os, pwd; uid=os.getuid(); assert uid > 0; entry=pwd.getpwuid(uid); print(f"uid={uid} home={entry.pw_dir}")'

@@ -6,6 +6,8 @@ This is a synthetic-data demonstration model for estimating whether an active st
 
 The model card documents one frozen registry entry: `student-dropout`, version `1`, URI `models:/student-dropout/1`. The freeze record is [reports/demo/frozen_model.json](../reports/demo/frozen_model.json). Its threshold is **0.15**. The model was frozen before the final 2025_S2 assessment; the single authorized evaluation is now complete.
 
+The frozen version 1 used historical config 1.0 and a 0.60 minimum-recall gate ([config/model-v1.yaml](../config/model-v1.yaml), retained byte-for-byte). Future candidate runs use config 1.1 and a 0.80 minimum-recall gate in [config/model.yaml](../config/model.yaml); this policy change does not alter the frozen model, its reports, or its evaluation.
+
 ## Intended use and limits
 
 The intended use is to demonstrate validation, reproducible training, model registration, explicit promotion/rollback, batch scoring, and drift monitoring. A backend may use the documented output contract in a fictional integration exercise.

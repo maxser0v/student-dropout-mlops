@@ -1,5 +1,9 @@
 # Student dropout MLOps implementation plan
 
+## Current model-policy note (2026-11-21)
+
+Frozen model version 1 retains its original `config/model-v1.yaml` policy and historical 0.60 minimum-recall gate. Future candidates use config version 1.1 in `config/model.yaml`, with minimum recall 0.80; other gate settings are unchanged. This future policy does not rewrite frozen reports or the completed version-1 evaluation.
+
 ## Primary goal
 
 Demonstrate a reproducible student course-withdrawal model lifecycle: version a dataset, run a checked training pipeline, track and approve a model, execute containerised predictions, detect changed inputs, and roll back safely. The professor should be able to see evidence of each practice; model optimisation is secondary.

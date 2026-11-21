@@ -194,3 +194,25 @@ def test_explicit_promotion_and_rollback_are_idempotent(tmp_path: Path, monkeypa
     assert events[0]["promoted"]["config_version"] == "1.0"
     assert events[1]["previous"]["config_version"] == "1.0"
     assert events[-1]["restored"]["config_version"] == "1.0"
+
+
+def test_future_gate_policy_is_80_percent_and_historical_config_bytes_are_preserved() -> None:
+    import hashlib
+
+    historical_bytes = (ROOT / "config/model-v1.yaml").read_bytes()
+    assert hashlib.sha256(historical_bytes).hexdigest() == "b71fb714b1657910e64ba155aa57563f400cde3551822538466e760edbf69f9b"
+    historical = yaml.safe_load(historical_bytes)
+    future = yaml.safe_load((ROOT / "config/model.yaml").read_text(encoding="utf-8"))
+    assert historical["config_version"] == "1.0"
+    assert historical["gates"]["minimum_recall"] == 0.60
+    assert future["config_version"] == "1.1"
+    assert future["gates"]["minimum_recall"] == 0.80
+
+    candidate = {**_candidate(), "recall": 0.75}
+    old_report = evaluate_release_gate(candidate, historical, lineage_passed=True)
+    future_report = evaluate_release_gate(candidate, future, lineage_passed=True)
+    assert old_report["passed"] is True
+    assert future_report["passed"] is False
+    recall_check = next(check for check in future_report["checks"] if check["name"] == "recall")
+    assert recall_check["expected"] == 0.80
+    assert recall_check["passed"] is False

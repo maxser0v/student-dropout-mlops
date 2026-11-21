@@ -114,7 +114,7 @@ The model also returns a simple display label:
 - Below the saved threshold: `routine`.
 - At or above the saved threshold: `review`.
 
-The selected demonstration threshold is `0.15`, meaning 15%. This is an assignment setting, not an approved university policy. The threshold is saved with the model so it cannot silently change between training and use.
+The historical frozen model used a `0.15` threshold, meaning 15%. That value and its original 1.0 configuration remain attached to that frozen model. New candidate runs use configuration 1.1, which raises the minimum validation recall requirement to `0.80`; this is an assignment gate, not an approved university policy.
 
 ## 5. What the four main tools do
 
@@ -199,6 +199,8 @@ A release gate is simply a set of checks a candidate must pass before it can be 
 
 For this demonstration, those checks include finding enough simulated withdrawals, avoiding too many false alerts, comparing probability error with a simple baseline, and checking data lineage. A replacement candidate is also compared with the current champion on the same validation records.
 
+New candidates must meet at least 0.80 recall on the validation cohort. A candidate that passes is registered as a version, but is not automatically promoted. The original frozen model and its one-time assessment continue to use their saved configuration 1.0.
+
 I tested the gate using a deliberately weak constant predictor. It gave every student the same probability based on the training withdrawal rate.
 
 It failed the existing requirements. The gate recorded the reasons, no model version was registered for that baseline, and the approved model stayed unchanged.
@@ -277,9 +279,11 @@ Historical outcome records are needed for training and later evaluation. They ar
 
 There is currently no prediction API. The agreed interface is a batch input CSV and a batch output CSV. The [integration guide](INTEGRATION.md) provides the exact commands.
 
+For the complete local walkthrough, run `make demo`. It prepares the fictional data only if `data/` is absent, verifies its DVC pointer, builds a non-root ARM64 image, runs all eight training steps, and scores a 12-row batch with the new concrete candidate. It never replaces existing data, promotes the candidate, or evaluates the held-out final cohort. Settings from `.env.example` load automatically; the new dashboard, result JSON and predictions use a separate UUID-based project and output directory.
+
 ## 12. What has actually been checked
 
-- **45 automated tests passed.** They cover data rules, feature preparation, model/gate behaviour, scoring and monitoring.
+- **The original 45-test suite passed at the initial checkpoint; the strengthened current suite now passes 70 tests.** The additional checks cover DVC lineage, provenance, non-root runtime, output isolation, and stale-data rejection.
 - A complete training workflow ran locally and in Docker.
 - DVC data recovery matched the original checksum.
 - A poor baseline failed the release gate without replacing the champion.

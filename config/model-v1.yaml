@@ -1,0 +1,35 @@
+config_version: "1.0"
+model_name: student-dropout
+seed: 903
+target:
+  version: withdrawal-after-day-35-by-course-end-v1
+  description: Withdrawal after the day-35 cutoff and by course end, conditional on active enrolment at cutoff.
+feature_schema:
+  version: "1.0"
+  columns:
+    - active_days_14d
+    - active_days_previous_14d
+    - interactions_14d
+    - interactions_previous_14d
+    - resource_views_14d
+    - forum_posts_14d
+    - late_submissions_to_date
+    - assignments_due_to_date
+    - scores_available_count
+    - mean_score_pct_to_date
+    - missed_assignments
+    - activity_change
+    - days_since_last_activity
+    - no_activity_history
+threshold_selection:
+  lower: 0.05
+  upper: 0.95
+  step: 0.05
+  minimum_precision: 0.30
+gates:
+  average_precision_above_prevalence: 0.05
+  minimum_recall: 0.60
+  minimum_precision: 0.30
+  maximum_recall_drop: 0.05
+  maximum_precision_drop: 0.05
+  maximum_brier_increase: 0.02

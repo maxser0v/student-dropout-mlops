@@ -54,6 +54,14 @@ uv run pytest
 
 The lock fixes exact wheels and hashes. Runtime outputs, local databases, DVC cache/remote, and Python environments are ignored by Git.
 
+For the full local Docker demonstration from a clean checkout, the supported entry point is:
+
+```sh
+make demo
+```
+
+The runner uses `.env.example` as its defaults without requiring a copy, generates the fictional data only if the `data/` directory is absent, verifies its manifest and DVC directory pointer without a cache/remote, and uses a unique Compose project/volume. It records the host Git revision and dirty state, a SHA-256 source-tree digest, OCI image labels, and the inspected image ID. Runtime application services use the current non-root host UID/GID. If port 5000 is occupied, it chooses another loopback port. Result JSON and prediction output are written under UUID-based `reports/demo_runs/` and `outputs/demo_runs/` paths.
+
 ## DVC local recovery remote
 
 `data/` is tracked as one DVC bundle. The default remote is configured only in the ignored `.dvc/config.local` and points to `local_dvc_store/` outside `data/`:
@@ -86,6 +94,20 @@ The same-disk local remote demonstrates restore mechanics; it is not an off-devi
 - Host and container scoring of the same version-1 model and 12-row input matched row keys and model version; maximum absolute probability difference was `1.11e-16` (within `1e-6`).
 - Container Metaflow state and cards are bind-mounted at the same absolute project path as the host. Host `card list` and the Local Card Viewer on port 8324 both displayed all eight cards for container run `1795193668049314`.
 - MLflow's optional PyFunc input-example check logs a warning while `MLFLOW_ALLOW_MODEL_CODE_EXECUTION=false`; the locked sklearn model and input example are still logged. The shared native sklearn scorer independently validates the registered `skops` artifact's exact `numpy.dtype` allowlist and successfully calls `predict_proba`.
+
+## Current candidate policy
+
+- New training candidates use configuration 1.1, with minimum validation recall 0.80; the other release gates remain unchanged. The previous configuration is preserved byte-for-byte as `config/model-v1.yaml` (SHA-256 `b71fb714b1657910e64ba155aa57563f400cde3551822538466e760edbf69f9b`) for the original frozen version 1 and its recorded one-time final assessment.
+- `make demo` does not promote candidates and does not evaluate the held-out final cohort. It uses an isolated Compose project and registry volume, leaving the existing project and champion unchanged.
+
+## Isolated non-root `make demo` verification
+
+- Ran `make demo` on the current dirty working tree. Data checks passed for 3,600 synthetic records and the full six-file DVC pointer (`58dd4f08e5a36015f5b265a093195256.dir`). No existing data or report was overwritten.
+- Built ARM64 image `student-dropout:demo-be10b3d5b598`, image ID `sha256:188cc937b1b6476b0c2957d1223472c0798d731f01e97806c374e707e22f8618`. OCI revision/source labels matched the computed host provenance; the training run recorded the exact image ID.
+- All three application services—MLflow, training, and scoring—reported UID 501 and GID 20. Only the isolated MLflow volume initializer ran as root.
+- The dashboard stayed isolated at `http://127.0.0.1:52106` because the existing dashboard occupied port 5000. The candidate registry contained version 1, passed the 0.80 recall gate, and was not promoted. Metaflow run `1795244875752748`; MLflow run `334287e40c8f483d9996e9573477ddac`.
+- The machine result is `reports/demo_runs/be10b3d5b5984668bd033740a73580a7/demo-result.json`. The concrete version 1 scorer produced 12 rows at `outputs/demo_runs/be10b3d5b5984668bd033740a73580a7/predictions.csv`.
+- The existing model 1 freeze/registry remained separate. The new demo endpoint and files are local outputs, not a public deployment. Training's optional MLflow PyFunc input-example warning is expected with broad model-code execution disabled; native skops batch scoring completed successfully.
 
 ## Primary references
 

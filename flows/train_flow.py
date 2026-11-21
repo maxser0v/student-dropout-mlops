@@ -7,8 +7,8 @@ import json
 import os
 import re
 import importlib.metadata
-import subprocess
 import sys
+import tempfile
 from functools import wraps
 from pathlib import Path
 from typing import Any
@@ -34,6 +34,7 @@ if str(ROOT / "src") not in sys.path:
 
 from dropout.features import make_features
 from dropout.gates import evaluate_release_gate
+from dropout.lineage import collect_source_lineage, verify_dvc_directory
 from dropout.model_io import load_verified_bundle
 from dropout.training import (
     assert_feature_schema,
@@ -50,6 +51,69 @@ def _json_dump(path: Path, payload: Any) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
     return path
+
+
+def _result_path(path_value: str | Path | None) -> Path | None:
+    if path_value is None or str(path_value).strip() == "":
+        return None
+    path = Path(path_value)
+    candidate = Path(os.path.abspath(path if path.is_absolute() else ROOT / path))
+    reports_root = Path(os.path.abspath(ROOT / "reports"))
+    if candidate == reports_root or reports_root not in candidate.parents:
+        raise ValueError("result-path must be a file inside the project reports/ directory")
+    if reports_root.is_symlink():
+        raise ValueError("result-path reports/ directory cannot be a symlink")
+    cursor = candidate.parent
+    while cursor != reports_root and reports_root in cursor.parents:
+        if cursor.exists() and cursor.is_symlink():
+            raise ValueError("result-path cannot traverse a symlink inside reports/")
+        cursor = cursor.parent
+    if candidate.is_symlink():
+        raise ValueError("result-path cannot be a symlink")
+    resolved = candidate.resolve()
+    if reports_root.resolve() not in resolved.parents:
+        raise ValueError("result-path resolves outside the project reports/ directory")
+    if candidate.exists():
+        raise FileExistsError(f"result-path already exists: {candidate}")
+    return candidate
+
+
+def _write_result(path: Path, payload: dict[str, Any]) -> None:
+    """Atomically create a result without replacing an existing file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    file_descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary = Path(temp_name)
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8") as result_file:
+            json.dump(payload, result_file, indent=2, sort_keys=True, allow_nan=False)
+            result_file.write("\n")
+            result_file.flush()
+            os.fsync(result_file.fileno())
+        # link() is an atomic create-if-absent operation on this filesystem.
+        os.link(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _result_payload(
+    *,
+    status: str,
+    candidate_version: str | None,
+    mlflow_run_id: str | None,
+    metaflow_run_id: str | None,
+    gate_passed: bool,
+    error: BaseException | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "status": status,
+        "gate_passed": bool(gate_passed),
+        "candidate_version": candidate_version,
+        "mlflow_run_id": mlflow_run_id,
+        "metaflow_run_id": metaflow_run_id,
+    }
+    if error is not None:
+        result["error"] = {"type": type(error).__name__, "message": str(error)}
+    return result
 
 
 def _load_config(path: str | Path) -> tuple[dict[str, Any], str]:
@@ -99,44 +163,56 @@ def _failure_guard(function):
     def wrapped(self, *args, **kwargs):
         try:
             return function(self, *args, **kwargs)
-        except BaseException:
+        except BaseException as exc:
             run_id = getattr(self, "mlflow_run_id", None)
             if run_id:
                 try:
                     _set_tracking(getattr(self, "resolved_tracking_uri", self.tracking_uri)).set_terminated(run_id, status="FAILED")
                 except Exception:
                     pass
+            try:
+                result_path = getattr(self, "resolved_result_path", None)
+                if result_path is not None:
+                    gate_report = getattr(self, "gate_report", {}) or {}
+                    _write_result(
+                        result_path,
+                        _result_payload(
+                            status="failed",
+                            candidate_version=getattr(self, "registered_version", None),
+                            mlflow_run_id=run_id,
+                            metaflow_run_id=getattr(self, "flow_run_id", None),
+                            gate_passed=bool(gate_report.get("passed", False)),
+                            error=exc,
+                        ),
+                    )
+            except Exception:
+                pass
             raise
     return wrapped
 
 
-def _git_lineage() -> dict[str, Any]:
-    def call(*args: str) -> str | None:
-        try:
-            return subprocess.check_output(["git", *args], cwd=ROOT, text=True, stderr=subprocess.DEVNULL).strip()
-        except (OSError, subprocess.CalledProcessError):
-            return None
-
-    status = call("status", "--porcelain")
-    return {"git_commit": call("rev-parse", "HEAD"), "git_dirty": bool(status), "git_status_entries": len(status.splitlines()) if status else 0}
-
-
 def _data_lineage(data_dir: Path, manifest: dict[str, Any]) -> dict[str, Any]:
     hashes = {name: info["sha256"] for name, info in manifest.get("files", {}).items()}
-    canonical_data_dir = (ROOT / "data").resolve()
-    is_dvc_tracked_input = data_dir.resolve() == canonical_data_dir
-    pointer = ROOT / "data.dvc" if is_dvc_tracked_input else None
+    pointer = ROOT / "data.dvc"
     required = {"data/raw/lms_snapshots.csv", "data/raw/student_outcomes.csv"}
     complete = required.issubset(hashes) and all(
         isinstance(hashes.get(name), str) and re.fullmatch(r"[0-9a-fA-F]{64}", hashes[name])
         for name in required
     )
+    manifest_files = set(hashes)
+    expected_paths = {name.removeprefix("data/") for name in manifest_files} | {"manifest.json"}
+    dvc_verification = verify_dvc_directory(
+        pointer,
+        data_dir,
+        expected_path="data",
+        expected_files=expected_paths,
+    )
     return {
-        "dvc_pointer_path": str(pointer.relative_to(ROOT)) if pointer is not None else None,
-        "dvc_pointer_sha256": hashlib.sha256(pointer.read_bytes()).hexdigest() if pointer is not None and pointer.is_file() else None,
+        "dvc_pointer_path": str(pointer.relative_to(ROOT)),
+        "dvc_pointer_sha256": hashlib.sha256(pointer.read_bytes()).hexdigest() if pointer.is_file() else None,
         "data_file_sha256": hashes,
         "complete_data_checksums": bool(complete),
-        "canonical_dvc_tracked_input": is_dvc_tracked_input,
+        "dvc_directory_verification": dvc_verification,
         "data_manifest_sha256": hashlib.sha256((data_dir / "manifest.json").read_bytes()).hexdigest(),
     }
 
@@ -205,12 +281,14 @@ class TrainFlow(FlowSpec):
     config_path = Parameter("config-path", default="config/model.yaml", help="Frozen model and release-gate configuration")
     tracking_uri = Parameter("tracking-uri", default="sqlite:///reports/mlflow/mlflow.db", help="MLflow tracking and registry URI")
     experiment_name = Parameter("experiment-name", default="student-dropout", help="MLflow experiment name")
+    result_path = Parameter("result-path", default=None, help="Optional machine-readable run result JSON path")
 
     @_failure_guard
     @card
     @step
     def start(self):
         self.flow_run_id = str(current.run_id)
+        self.resolved_result_path = _result_path(self.result_path)
         self.resolved_data_dir = str(Path(self.data_dir).resolve())
         self.resolved_config_path = str(Path(self.config_path).resolve())
         self.resolved_tracking_uri = self.tracking_uri
@@ -268,7 +346,21 @@ class TrainFlow(FlowSpec):
                 "exclusions": self.exclusions,
             }
             self.manifest = manifest
-            self.lineage = {**_git_lineage(), **_data_lineage(Path(self.resolved_data_dir), manifest)}
+            self.lineage = {
+                **collect_source_lineage(ROOT),
+                **_data_lineage(Path(self.resolved_data_dir), manifest),
+            }
+            dvc_verification = self.lineage["dvc_directory_verification"]
+            if not dvc_verification["passed"]:
+                lineage_path = _json_dump(Path(self.report_dir) / "lineage.json", self.lineage)
+
+                def log_lineage_failure():
+                    mlflow.set_tag("dvc.directory.verified", "false")
+                    mlflow.log_dict(dvc_verification, "dvc_verification.json")
+                    mlflow.log_artifact(str(lineage_path), artifact_path="provenance")
+
+                _in_run(self.mlflow_run_id, log_lineage_failure)
+                raise ValueError(f"DVC-tracked data directory verification failed: {dvc_verification.get('reason')}")
             self.dependency_versions = {
                 "python": sys.version.split()[0],
                 "pandas": importlib.metadata.version("pandas"),
@@ -295,7 +387,27 @@ class TrainFlow(FlowSpec):
                     "mlflow_version": self.dependency_versions["mlflow"],
                     "metaflow_version": self.dependency_versions["metaflow"],
                 })
-                mlflow.set_tags({"git.commit": self.lineage["git_commit"] or "unavailable", "git.dirty": str(self.lineage["git_dirty"]).lower()})
+                mlflow.set_tags({
+                    "git.commit": self.lineage["git_commit"] or "unavailable",
+                    "git.dirty": str(self.lineage["git_dirty"]),
+                    "git.commit.source": str(self.lineage["git_commit_source"]),
+                    "source.revision.source": str(self.lineage["source_revision_source"]),
+                    "source.tree.sha256": str(self.lineage["source_tree_sha256"] or "unavailable"),
+                    "source.tree.origin": str(self.lineage["source_tree_sha256_source"]),
+                    "docker.image.id": str(self.lineage["docker_image_id"] or "unavailable"),
+                    "docker.image.id.source": str(self.lineage["docker_image_id_source"]),
+                    "dvc.pointer.sha256": str(self.lineage["dvc_pointer_sha256"] or "unavailable"),
+                    "dvc.directory.verified": str(self.lineage["dvc_directory_verification"]["passed"]).lower(),
+                })
+                mlflow.log_params({
+                    "git_commit": self.lineage["git_commit"] or "unavailable",
+                    "git_dirty": self.lineage["git_dirty"],
+                    "git_commit_source": self.lineage["git_commit_source"],
+                    "source_revision_source": self.lineage["source_revision_source"],
+                    "source_tree_sha256": self.lineage["source_tree_sha256"] or "unavailable",
+                    "docker_image_id": self.lineage["docker_image_id"] or "unavailable",
+                    "dvc_pointer_sha256": self.lineage["dvc_pointer_sha256"] or "unavailable",
+                })
                 _json_dump(Path(self.report_dir) / "manifest.json", self.manifest)
                 _json_dump(Path(self.report_dir) / "lineage.json", self.lineage)
                 _json_dump(Path(self.report_dir) / "split_metadata.json", self.split_metadata)
@@ -463,6 +575,7 @@ class TrainFlow(FlowSpec):
                 self.lineage.get("dvc_pointer_sha256")
                 and self.lineage.get("complete_data_checksums")
                 and self.lineage.get("data_manifest_sha256")
+                and self.lineage.get("dvc_directory_verification", {}).get("passed")
             ),
             champion=champion_metadata,
         )
@@ -525,8 +638,14 @@ class TrainFlow(FlowSpec):
     @step
     def end(self):
         client = _set_tracking(self.resolved_tracking_uri)
-        client.set_terminated(self.mlflow_run_id, status="FINISHED")
         self.flow_summary = {
+            **_result_payload(
+                status="completed",
+                candidate_version=self.registered_version,
+                mlflow_run_id=self.mlflow_run_id,
+                metaflow_run_id=self.flow_run_id,
+                gate_passed=bool(self.gate_report["passed"]),
+            ),
             "metaflow_run_id": self.flow_run_id,
             "mlflow_run_id": self.mlflow_run_id,
             "gate_decision": self.gate_report["decision"],
@@ -534,6 +653,9 @@ class TrainFlow(FlowSpec):
             "model_version": self.registered_version,
             "report_dir": self.report_dir,
         }
+        if self.resolved_result_path is not None:
+            _write_result(self.resolved_result_path, self.flow_summary)
+        client.set_terminated(self.mlflow_run_id, status="FINISHED")
         print(json.dumps(self.flow_summary, sort_keys=True))
 
 

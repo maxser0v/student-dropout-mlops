@@ -1,4 +1,4 @@
-config_version: "1.0"
+config_version: "1.1"
 model_name: student-dropout
 seed: 903
 target:
@@ -28,7 +28,7 @@ threshold_selection:
   minimum_precision: 0.30
 gates:
   average_precision_above_prevalence: 0.05
-  minimum_recall: 0.60
+  minimum_recall: 0.80
   minimum_precision: 0.30
   maximum_recall_drop: 0.05
   maximum_precision_drop: 0.05

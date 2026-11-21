@@ -1,12 +1,33 @@
 x-runtime: &runtime
-  image: student-dropout:local
-  platform: linux/arm64
+  image: ${DEMO_IMAGE:-student-dropout:local}
+  platform: ${DOCKER_PLATFORM:-linux/arm64}
   build:
     context: .
     dockerfile: Dockerfile
+    args:
+      RUNTIME_UID: ${RUNTIME_UID:-10001}
+      RUNTIME_GID: ${RUNTIME_GID:-10001}
+      GIT_COMMIT: ${GIT_COMMIT:-unknown}
+      GIT_DIRTY: ${GIT_DIRTY:-unknown}
+      SOURCE_TREE_SHA256: ${SOURCE_TREE_SHA256:-unknown}
+      SOURCE_REVISION_SOURCE: ${SOURCE_REVISION_SOURCE:-unspecified}
+      SOURCE_TREE_HASH_ALGORITHM: ${SOURCE_TREE_HASH_ALGORITHM:-sha256}
   working_dir: /app
+  user: "${RUNTIME_UID:-10001}:${RUNTIME_GID:-10001}"
 
 services:
+  # Run explicitly before MLflow. This is the only root service and only
+  # changes ownership inside the persistent tracking volume.
+  volume-init:
+    <<: *runtime
+    profiles: [init]
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - "mkdir -p /mlflow/artifacts && chown -R ${RUNTIME_UID:-10001}:${RUNTIME_GID:-10001} /mlflow"
+    volumes:
+      - mlflow_data:/mlflow
+
   mlflow:
     <<: *runtime
     command:
@@ -21,9 +42,9 @@ services:
       - --artifacts-destination
       - /mlflow/artifacts
       - --allowed-hosts
-      - localhost:5000,127.0.0.1:5000,mlflow:5000
+      - "localhost:5000,127.0.0.1:5000,mlflow:5000,localhost:${DEMO_MLFLOW_PORT:-5000},127.0.0.1:${DEMO_MLFLOW_PORT:-5000}"
     ports:
-      - "127.0.0.1:5000:5000"
+      - "127.0.0.1:${DEMO_MLFLOW_PORT:-5000}:5000"
     volumes:
       - mlflow_data:/mlflow
     healthcheck:
@@ -51,19 +72,35 @@ services:
       - /app/config/model.yaml
       - --tracking-uri
       - http://mlflow:5000
+      - --result-path
+      - ${TRAIN_RESULT_PATH:-/app/reports/demo_runs/training-result.json}
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MLFLOW_ALLOW_MODEL_CODE_EXECUTION: "false"
-      METAFLOW_USER: student-mlops
-      METAFLOW_DATASTORE_SYSROOT_LOCAL: "${PWD}"
-      METAFLOW_CARD_LOCALROOT: "${PWD}/.metaflow/mf.cards"
+      METAFLOW_USER: ${METAFLOW_USER:-student-mlops}
+      METAFLOW_DATASTORE_SYSROOT_LOCAL: "${PROJECT_ROOT:-${PWD}}"
+      METAFLOW_CARD_LOCALROOT: "${PROJECT_ROOT:-${PWD}}/.metaflow/mf.cards"
+      GIT_COMMIT: ${GIT_COMMIT:-unknown}
+      GIT_DIRTY: ${GIT_DIRTY:-unknown}
+      SOURCE_TREE_SHA256: ${SOURCE_TREE_SHA256:-unknown}
+      SOURCE_REVISION_SOURCE: ${SOURCE_REVISION_SOURCE:-unspecified}
+      SOURCE_TREE_HASH_ALGORITHM: ${SOURCE_TREE_HASH_ALGORITHM:-sha256}
+      DockerImageID: ${DockerImageID:-unknown}
     volumes:
-      - ./data:/app/data:ro
-      - ./data.dvc:/app/data.dvc:ro
       - type: bind
-        source: ./.metaflow
-        target: "${PWD}/.metaflow"
-      - ./reports:/app/reports
+        source: "${PROJECT_ROOT:-${PWD}}/data"
+        target: /app/data
+        read_only: true
+      - type: bind
+        source: "${PROJECT_ROOT:-${PWD}}/data.dvc"
+        target: /app/data.dvc
+        read_only: true
+      - type: bind
+        source: "${PROJECT_ROOT:-${PWD}}/reports"
+        target: /app/reports
+      - type: bind
+        source: "${PROJECT_ROOT:-${PWD}}/.metaflow"
+        target: "${PROJECT_ROOT:-${PWD}}/.metaflow"
     depends_on:
       mlflow:
         condition: service_healthy
@@ -76,8 +113,13 @@ services:
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MLFLOW_ALLOW_MODEL_CODE_EXECUTION: "false"
     volumes:
-      - ./data:/app/data:ro
-      - ./outputs:/app/outputs
+      - type: bind
+        source: "${PROJECT_ROOT:-${PWD}}/data"
+        target: /app/data
+        read_only: true
+      - type: bind
+        source: "${PROJECT_ROOT:-${PWD}}/outputs"
+        target: /app/outputs
     depends_on:
       mlflow:
         condition: service_healthy
