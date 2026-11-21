@@ -4,11 +4,11 @@ This is a local lifecycle demonstration using deterministic fictional LMS record
 
 ## Start the local services
 
-From the project directory, restore and validate the synthetic data, build the pinned local image, and start the tracking server:
+From the project directory, generate and validate the synthetic data, build the pinned local image, and start the tracking server. A fresh clone does not contain the original machine's DVC remote, saved model versions, reports or databases. The scenario records below describe the original demonstration; create a candidate and explicitly promote a passing version using [INTEGRATION.md](INTEGRATION.md) before scoring on a fresh installation.
 
 ```sh
 uv sync --locked
-uv run dvc pull
+uv run python scripts/generate_synthetic_data.py
 uv run python scripts/verify_synthetic_data.py
 docker compose build
 docker compose up -d mlflow

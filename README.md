@@ -18,18 +18,32 @@ From the project directory:
 
 ```sh
 uv sync --locked
+uv run python scripts/generate_synthetic_data.py
 uv run python scripts/verify_synthetic_data.py
 docker compose build
 docker compose up -d mlflow
 ```
 
-The MLflow dashboard is at [http://127.0.0.1:5000](http://127.0.0.1:5000). Training and scoring are one-shot jobs; `docker compose up -d mlflow` does not train a model. See the [integration guide](docs/INTEGRATION.md) for the job commands and the Local Card Viewer at [http://localhost:8324](http://localhost:8324).
+The dataset is DVC-managed and is not stored as CSV files in Git. The generator recreates the exact fictional dataset locally, including its manifest. A fresh clone does not need the original machine's DVC remote. To demonstrate DVC recovery on your own computer, configure your own local remote following the [environment guide](docs/ENVIRONMENT.md).
+
+The MLflow dashboard is at [http://127.0.0.1:5000](http://127.0.0.1:5000). These localhost links open services on your own computer; they are not publicly hosted dashboards. Training and scoring are one-shot jobs; `docker compose up -d mlflow` does not train a model.
+
+Create your first candidate, inspect its release gate, then explicitly promote its concrete version if it passes:
+
+```sh
+docker compose --profile jobs run --rm train
+# For a fresh MLflow store, the first passing candidate is normally version 1.
+# Check the actual version and gate report before promotion.
+uv run python scripts/promote_model.py 1 --tracking-uri http://127.0.0.1:5000
+```
+
+See the [integration guide](docs/INTEGRATION.md) for scoring commands and the Local Card Viewer at [http://localhost:8324](http://localhost:8324). For a plain-English walkthrough, read [SIMPLE_EXPLANATION.md](docs/SIMPLE_EXPLANATION.md).
 
 ## Model workflow
 
 The Metaflow flow validates the complete export, trains one fixed-seed logistic-regression pipeline on cohorts 2023_S1 through 2024_S2, chooses its threshold on 2025_S1, and records a release gate. The final cohort, 2025_S2, is reserved for one separately frozen final assessment. Training does not promote candidates automatically. Use an explicit promotion command only after reviewing a passing gate report.
 
-The frozen model and completed once-only final-test assessment are recorded under `reports/demo/`; the results appear in the [model card](docs/MODEL_CARD.md). The held-out cohort is now consumed and must not be reused for tuning. All results are synthetic demonstration evidence, not real-world performance claims.
+The original local demonstration's frozen model and completed once-only final-test assessment were recorded under `reports/demo/`; its results appear in the [model card](docs/MODEL_CARD.md). Local reports, model artifacts, databases and prediction outputs are excluded from Git. A fresh clone starts with a new local tracking store; historical run IDs in the documentation describe the original demonstration. The original held-out cohort is now consumed and must not be reused for tuning. All results are synthetic demonstration evidence, not real-world performance claims.
 
 ## Scope
 

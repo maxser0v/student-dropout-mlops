@@ -18,10 +18,10 @@ The `mlflow_data` Docker volume keeps the SQLite database and the `/mlflow/artif
 
 ## Train a candidate
 
-Restore and verify the DVC data on the host first. The flow mounts `data/` read-only and validates the complete export and cohort labels, then uses only the training and validation labels for fitting, threshold selection and release checks. It does not use the held-out test labels.
+Create or restore and verify the DVC data on the host first. On a fresh clone, use the deterministic generator; `dvc pull` is an alternative only after configuring a remote you can access. The flow mounts `data/` read-only and validates the complete export and cohort labels, then uses only the training and validation labels for fitting, threshold selection and release checks. It does not use the held-out test labels.
 
 ```sh
-uv run dvc pull
+uv run python scripts/generate_synthetic_data.py
 uv run python scripts/verify_synthetic_data.py
 docker compose --profile jobs run --rm train
 ```
