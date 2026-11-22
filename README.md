@@ -11,6 +11,8 @@ All bundled students and outcomes are synthetic. Metrics and probabilities demon
 3. [Environment guide](docs/ENVIRONMENT.md) for locked dependencies and DVC recovery.
 4. [Integration guide](docs/INTEGRATION.md) for the local MLflow dashboard, Docker training/scoring, and Metaflow card viewer.
 5. [Monitoring guide](docs/MONITORING.md), [demo runbook](docs/DEMO_RUNBOOK.md), and [model card](docs/MODEL_CARD.md) for monitoring and release evidence.
+6. [Plagiarism implementation plan](docs/PLAGIARISM_IMPLEMENTATION_PLAN.md) and [plagiarism runbook](docs/PLAGIARISM_RUNBOOK.md) for the separate passage-reuse workflow.
+7. [PAN 2013 passage reuse results](docs/PLAGIARISM_RESULTS.md) for the real-data Docker run, registered model, and held-out evaluation.
 
 ## Quick start
 

@@ -1,0 +1,277 @@
+{
+  "schema_version": 1,
+  "documents": [
+    {
+      "id": "source-dev-a",
+      "text": "A passage alignment records the start and end positions on both sides of a reused segment. The original text is retained so a reviewer can verify the evidence.",
+      "role": "source",
+      "content_hash": "c94787a02217f7786650b7b5dc8f42cf8f5012ce4e3979b981a2136228a05561",
+      "topic_id": "evaluation-data",
+      "group_id": "group:source-dev-a"
+    },
+    {
+      "id": "source-dev-a-independent",
+      "text": "original stores A on text the records also the and a passage both retained reused report records final passage The evidence describes considers It score positions evidence assignment annotation the several checks end segment the and summaries The alignment of examples steps can verify sides a is reviewer so review team start how.",
+      "role": "source",
+      "content_hash": "d0f5b4093d9c82e3d46a64f192b0124f0e22f4caa0058db7c7f00fed2bff44b5",
+      "topic_id": "evaluation-data",
+      "group_id": "group:source-dev-a"
+    },
+    {
+      "id": "source-dev-b",
+      "text": "A student can compare several passages before deciding which one deserves closer review. Similar vocabulary alone is not proof of copied wording.",
+      "role": "source",
+      "content_hash": "b2d7aff9d8d37748dffc331b94d15811fab3472af6a4fc52096efb86d2570eff",
+      "topic_id": "evaluation-data",
+      "group_id": "group:source-dev-b"
+    },
+    {
+      "id": "source-dev-b-independent",
+      "text": "before vocabulary and wording subject passages covers Similar review same process deserves discussion of examples which the copied the can not The is surrounding proof a deciding evidence concerns student the When one question compare alone review several closer.",
+      "role": "source",
+      "content_hash": "ec2b901b587f8e47dfac8278cc7720a22baf445a1fe46bbc784337d98b53ebfa",
+      "topic_id": "evaluation-data",
+      "group_id": "group:source-dev-b"
+    },
+    {
+      "id": "source-test-a",
+      "text": "A good evaluation reserves examples that were unavailable during model fitting. This helps reveal whether predictions carry over to new work.",
+      "role": "source",
+      "content_hash": "cde995a8ddf5625cf58cd3ed371a2c91a9fc907ab19e9b17e86fa0fd5ab0b182",
+      "topic_id": "evaluation-data",
+      "group_id": "group:source-test-a"
+    },
+    {
+      "id": "source-test-a-independent",
+      "text": "about predictions new study's coverage It helps closes notes review with reserves fitting The and process discussion This fitting A over good limits work to were independent model annotation that the the sample predictions evaluation during evaluation about whether data examples model unavailable reveal carry includes final.",
+      "role": "source",
+      "content_hash": "e140ce49f6936bbefb7f78f281f7116b71e9df551164ed81cdf1228e69a735ab",
+      "topic_id": "evaluation-data",
+      "group_id": "group:source-test-a"
+    },
+    {
+      "id": "source-train-a",
+      "text": "A reliable experiment keeps a final test set untouched. The test set estimates performance on examples that played no role in fitting the model.",
+      "role": "source",
+      "content_hash": "fd03724eeb64d095a7740e9de8bf9d977f1ee6fd581d2cab808dc0118576302a",
+      "topic_id": "evaluation-data",
+      "group_id": "group:source-train-a"
+    },
+    {
+      "id": "source-train-a-independent",
+      "text": "that the A then review played discusses experiment set design keeps It submitted estimates and report examples The final for role list panel and examples long the In reliable scoring test quality history model this assessment a material model author of the control study fitting test in record fitting practice considers untouched on performance set no the a.",
+      "role": "source",
+      "content_hash": "c9914092dd664c8995f337494820dc14d072508e517d0a8bc7933f7aaa8be231",
+      "topic_id": "evaluation-data",
+      "group_id": "group:source-train-a"
+    },
+    {
+      "id": "source-train-b",
+      "text": "Researchers should report both retrieval failures and scoring errors. Retrieval determines which passages reach the reviewer, while scoring ranks the retrieved candidates.",
+      "role": "source",
+      "content_hash": "cb87898f6dfb5bcb831108a7401dec39654f5a68e0d22fcfcb9a82267a008a69",
+      "topic_id": "evaluation-data",
+      "group_id": "group:source-train-b"
+    },
+    {
+      "id": "source-train-b-independent",
+      "text": "failures passages report errors describe reviewer reviewer both the reach determines Separate scoring and the candidate while evaluation the ranks several candidates and the and Retrieval annotation retrieved workflow reviews which should chapter pool scoring test settings model coverage paragraphs quality The Researchers details retrieval.",
+      "role": "source",
+      "content_hash": "b049ee1a4a9d37f461d792adbcf2908b485f80e09d24f0a07943e3a3e300bd9b",
+      "topic_id": "evaluation-data",
+      "group_id": "group:source-train-b"
+    },
+    {
+      "id": "submission-dev-a",
+      "text": "The assignment considers several review examples, passage records, evidence checks, annotation steps, and score summaries. A passage alignment records the start and end positions on both sides of a reused segment. The original text is retained so a reviewer can verify the evidence. It also describes how the team stores the final report.",
+      "role": "submission",
+      "content_hash": "9511d763bb09893508807080a72d61b7cfaf33f571217a3eb840d2e9bd4543aa",
+      "topic_id": "evaluation-data",
+      "group_id": "group:source-dev-a"
+    },
+    {
+      "id": "submission-dev-b",
+      "text": "When the question concerns the same subject, a student can compare several passages before deciding which one deserves closer review. Similar vocabulary alone is not proof of copied wording. The surrounding discussion covers examples, evidence, and the review process.",
+      "role": "submission",
+      "content_hash": "9bdb4af0c1d8c0e7be851da8ba25c78491810d23048b23a5da91f9b2daa02b9c",
+      "topic_id": "evaluation-data",
+      "group_id": "group:source-dev-b"
+    },
+    {
+      "id": "submission-test-a",
+      "text": "The final sample includes discussion about evaluation, model fitting, data coverage, predictions, independent review, and the study's limits. A good evaluation reserves examples that were unavailable during model fitting. This helps reveal whether predictions carry over to new work. It closes with notes about the annotation process.",
+      "role": "submission",
+      "content_hash": "372a4d5382257aa5fbef45d0d3068b93c82e5e0f12c3c21304282a6b6fb0c56c",
+      "topic_id": "evaluation-data",
+      "group_id": "group:source-test-a"
+    },
+    {
+      "id": "submission-train-a",
+      "text": "In this report the panel discusses a long list of examples, model fitting, study design, review practice, and quality control. A reliable experiment keeps a final test set untouched. The test set estimates performance on examples that played no role in fitting the model. It then considers author history, the scoring record, and the material submitted for assessment.",
+      "role": "submission",
+      "content_hash": "c3035dea330541d25daeb556be1994067f4f828e7eb7d2e8522965c0b41cc58f",
+      "topic_id": "evaluation-data",
+      "group_id": "group:source-train-a"
+    },
+    {
+      "id": "submission-train-b",
+      "text": "The chapter reviews several evaluation details, the candidate pool, model settings, and the reviewer workflow. Researchers should report both retrieval failures and scoring errors. Retrieval determines which passages reach the reviewer, while scoring ranks the retrieved candidates. Separate paragraphs describe test coverage and annotation quality.",
+      "role": "submission",
+      "content_hash": "023b790e7eddff43ad6b011ddbd12849575152cefeeb88c5ea50a4e38cdc234c",
+      "topic_id": "evaluation-data",
+      "group_id": "group:source-train-b"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "submission-train-a:source-train-a:0",
+      "submission_id": "submission-train-a",
+      "source_id": "source-train-a",
+      "submission_start": 127,
+      "submission_end": 271,
+      "source_start": 0,
+      "source_end": 144
+    },
+    {
+      "id": "submission-train-b:source-train-b:0",
+      "submission_id": "submission-train-b",
+      "source_id": "source-train-b",
+      "submission_start": 111,
+      "submission_end": 282,
+      "source_start": 0,
+      "source_end": 171
+    },
+    {
+      "id": "submission-dev-a:source-dev-a:0",
+      "submission_id": "submission-dev-a",
+      "source_id": "source-dev-a",
+      "submission_start": 123,
+      "submission_end": 282,
+      "source_start": 0,
+      "source_end": 159
+    },
+    {
+      "id": "submission-dev-b:source-dev-b:0",
+      "submission_id": "submission-dev-b",
+      "source_id": "source-dev-b",
+      "submission_start": 47,
+      "submission_end": 190,
+      "source_start": 2,
+      "source_end": 145
+    },
+    {
+      "id": "submission-test-a:source-test-a:0",
+      "submission_id": "submission-test-a",
+      "source_id": "source-test-a",
+      "submission_start": 142,
+      "submission_end": 283,
+      "source_start": 0,
+      "source_end": 141
+    }
+  ],
+  "pairs": [
+    {
+      "submission_id": "submission-train-a",
+      "source_id": "source-train-a",
+      "label": 1,
+      "group_id": "group:source-train-a",
+      "split": "train"
+    },
+    {
+      "submission_id": "submission-train-a",
+      "source_id": "source-train-a-independent",
+      "label": 0,
+      "group_id": "group:source-train-a",
+      "split": "train"
+    },
+    {
+      "submission_id": "submission-train-b",
+      "source_id": "source-train-b",
+      "label": 1,
+      "group_id": "group:source-train-b",
+      "split": "train"
+    },
+    {
+      "submission_id": "submission-train-b",
+      "source_id": "source-train-b-independent",
+      "label": 0,
+      "group_id": "group:source-train-b",
+      "split": "train"
+    },
+    {
+      "submission_id": "submission-dev-a",
+      "source_id": "source-dev-a",
+      "label": 1,
+      "group_id": "group:source-dev-a",
+      "split": "train"
+    },
+    {
+      "submission_id": "submission-dev-a",
+      "source_id": "source-dev-a-independent",
+      "label": 0,
+      "group_id": "group:source-dev-a",
+      "split": "train"
+    },
+    {
+      "submission_id": "submission-dev-b",
+      "source_id": "source-dev-b",
+      "label": 1,
+      "group_id": "group:source-dev-b",
+      "split": "validation"
+    },
+    {
+      "submission_id": "submission-dev-b",
+      "source_id": "source-dev-b-independent",
+      "label": 0,
+      "group_id": "group:source-dev-b",
+      "split": "validation"
+    },
+    {
+      "submission_id": "submission-test-a",
+      "source_id": "source-test-a",
+      "label": 1,
+      "group_id": "group:source-test-a",
+      "split": "test"
+    },
+    {
+      "submission_id": "submission-test-a",
+      "source_id": "source-test-a-independent",
+      "label": 0,
+      "group_id": "group:source-test-a",
+      "split": "test"
+    }
+  ],
+  "splits": {
+    "train": [
+      "source-dev-a",
+      "source-dev-a-independent",
+      "source-train-a",
+      "source-train-a-independent",
+      "source-train-b",
+      "source-train-b-independent",
+      "submission-dev-a",
+      "submission-train-a",
+      "submission-train-b"
+    ],
+    "validation": [
+      "source-dev-b",
+      "source-dev-b-independent",
+      "submission-dev-b"
+    ],
+    "test": [
+      "source-test-a",
+      "source-test-a-independent",
+      "submission-test-a"
+    ],
+    "excluded": []
+  },
+  "lineage": {
+    "dataset": "authored-offline-fixture",
+    "license": "CC0-1.0",
+    "same_topic_stress": true,
+    "note": "synthetic demonstration labels; negatives are deterministic bag-of-words stress controls, not a benchmark",
+    "split_seed": 903,
+    "validation_fraction": 0.25,
+    "excluded_cross_split_negative_pairs": 0
+  }
+}

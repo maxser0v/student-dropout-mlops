@@ -88,3 +88,42 @@ jobs:
         run: >-
           docker run --rm --platform linux/arm64 --entrypoint python student-dropout:ci
           -c 'import os, pwd; uid=os.getuid(); assert uid > 0; entry=pwd.getpwuid(uid); print(f"uid={uid} home={entry.pw_dir}")'
+
+  plagiarism-fixture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+
+      - name: Resolve isolated runtime and test dependencies
+        run: uv sync --directory plagiarism-runtime --group test
+
+      - name: Run plagiarism unit checks and fixture release workflow with XGBoost
+        env:
+          MLFLOW_DISABLE_AGENT_HINT: "1"
+          METAFLOW_USER: github-actions
+          METAFLOW_DATASTORE_SYSROOT_LOCAL: ${{ github.workspace }}/artifacts/plagiarism/metaflow
+          METAFLOW_CARD_LOCALROOT: ${{ github.workspace }}/artifacts/plagiarism/mf.cards
+          PYTHONPATH: ${{ github.workspace }}/src
+        run: |
+          mkdir -p reports/plagiarism artifacts/plagiarism
+          uv run --directory plagiarism-runtime python -m pytest -q \
+            "$GITHUB_WORKSPACE/tests/test_plagiarism_core.py" \
+            "$GITHUB_WORKSPACE/tests/test_plagiarism_data.py" \
+            "$GITHUB_WORKSPACE/tests/test_plagiarism_score.py" \
+            "$GITHUB_WORKSPACE/tests/test_plagiarism_workflow_contract.py" \
+            "$GITHUB_WORKSPACE/tests/test_plagiarism_workflow_eval.py"
+          uv run --directory plagiarism-runtime python "$GITHUB_WORKSPACE/scripts/plagiarism_fixture_workflow.py" \
+            --tracking-uri sqlite:////tmp/plagiarism-fixture-ci.db \
+            --output-dir /tmp/plagiarism-fixture-ci

@@ -7,6 +7,9 @@ __pycache__
 .dvc
 .dvcignore
 data/
+plagiarism_data/
+models/
+artifacts/
 reports/
 outputs/
 local_dvc_store/

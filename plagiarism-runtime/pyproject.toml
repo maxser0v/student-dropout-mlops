@@ -1,0 +1,28 @@
+[project]
+name = "plagiarism-runtime"
+version = "0.1.0"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "mlflow==3.18.0",
+    "metaflow==2.19.41",
+    "numpy>=2.3,<3",
+    "PyYAML>=6,<7",
+    "scikit-learn==1.9.1",
+    "sentence-transformers>=5.1,<6",
+    "torch>=2.6,<3",
+    "xgboost>=3.0,<4",
+]
+
+[dependency-groups]
+test = ["pytest>=8,<10"]
+
+[tool.uv]
+package = false
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }

@@ -313,3 +313,7 @@ These numbers describe the generated simulation. They do not show how well the m
 > I implemented a small MLOps lifecycle for a student course-withdrawal predictor. I used a simple logistic-regression model so the focus stays on the operating process. DVC records the dataset version, Metaflow runs the checked training steps, MLflow records experiments and model versions, and Docker packages the environment. The demonstration shows invalid-data rejection, a failed release gate, explicit approval and rollback, consistent batch predictions and drift monitoring. All records are synthetic, so the results demonstrate the lifecycle rather than real-world student prediction quality.
 
 For the step-by-step demonstration and saved evidence, use [DEMO_RUNBOOK.md](DEMO_RUNBOOK.md).
+
+## 15. Passage reuse results on PAN 2013
+
+MiniLM found similar passages, then XGBoost scored the matches for human review. On the custom held-out split from PAN’s official training archive, XGBoost reduced false alerts from 4,055 to 65 compared with MiniLM cosine. The combined model reached 93.8% alert precision and 82.8% span recall, compared with 19.5% precision and 84.3% recall for MiniLM cosine. MLflow registered version 1 after the validation gate passed. [Detailed results and run evidence](PLAGIARISM_RESULTS.md)

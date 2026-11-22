@@ -31,3 +31,4 @@ local_dvc_store/
 *.pem
 *.key
 /data
+/plagiarism_data/

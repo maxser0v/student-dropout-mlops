@@ -68,6 +68,10 @@ The single frozen evaluation completed on 2025_S2, support 600, at the unchanged
 
 These are results on simulated outcomes only. Final precision (0.2934) is below the illustrative validation precision floor of 0.30; the frozen threshold and model were not changed after seeing this result. No post-test tuning or result-based model selection was performed. Do not claim real-world student performance. The test cohort has now been used and is no longer an untouched holdout; a redesign requires a new held-out cohort.
 
+## Related model results
+
+The project also evaluated a passage reuse model on a custom PAN 2013 holdout. See the [MiniLM and XGBoost results](PLAGIARISM_RESULTS.md).
+
 ## Release and monitoring
 
 The model is registered as an immutable MLflow version. Promotion and rollback use explicit commands and restore the saved model version and deployment bundle. `reports/releases.json` contains an earlier host-local SQLite registry's version-1/version-2 promotion and rollback, followed by a fresh Compose registry's version-1 promotion; these registry histories are separate.

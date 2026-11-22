@@ -1,0 +1,32 @@
+config_version: "1.0"
+model_name: passage-reuse
+seed: 903
+target:
+  version: passage-reuse-pair-classifier-v1
+  description: Rank MiniLM retrieved passage pairs for human review.
+feature_schema:
+  version: "1.0"
+  columns:
+    - minilm_cosine
+    - tfidf_cosine
+    - shared_word_ngram_overlap
+    - rare_term_overlap
+    - length_ratio
+chunking:
+  target_tokens: 180
+  overlap_tokens: 40
+  max_tokens: 256
+  top_k: 10
+  min_span_coverage: 0.5
+threshold_selection:
+  requested_shared_recall: 0.80
+gates:
+  minimum_recall: 0.75
+  maximum_recall_drop: 0.05
+  minimum_false_alert_reduction: 1
+  require_strict_false_alert_improvement: true
+  validation_only_thresholds: true
+data:
+  validation_fraction: 0.2
+  split_seed: 903
+  fixture_model_name: passage-reuse-fixture

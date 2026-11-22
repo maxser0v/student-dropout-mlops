@@ -15,6 +15,44 @@ x-runtime: &runtime
   working_dir: /app
   user: "${RUNTIME_UID:-10001}:${RUNTIME_GID:-10001}"
 
+x-plagiarism-runtime: &plagiarism-runtime
+  image: ${PLAGIARISM_IMAGE:-student-plagiarism:local}
+  platform: ${DOCKER_PLATFORM:-linux/arm64}
+  build:
+    context: .
+    dockerfile: Dockerfile.plagiarism
+    args:
+      RUNTIME_UID: ${RUNTIME_UID:-10001}
+      RUNTIME_GID: ${RUNTIME_GID:-10001}
+      GIT_COMMIT: ${GIT_COMMIT:-unknown}
+      GIT_DIRTY: ${GIT_DIRTY:-unknown}
+      SOURCE_TREE_SHA256: ${SOURCE_TREE_SHA256:-unknown}
+      SOURCE_REVISION_SOURCE: ${SOURCE_REVISION_SOURCE:-unspecified}
+      SOURCE_TREE_HASH_ALGORITHM: ${SOURCE_TREE_HASH_ALGORITHM:-sha256}
+  working_dir: /app
+  user: "${RUNTIME_UID:-10001}:${RUNTIME_GID:-10001}"
+  environment:
+    MLFLOW_TRACKING_URI: http://mlflow:5000
+    MLFLOW_ALLOW_MODEL_CODE_EXECUTION: "false"
+    HF_HUB_OFFLINE: "1"
+    TRANSFORMERS_OFFLINE: "1"
+    METAFLOW_USER: ${METAFLOW_USER:-student-mlops}
+    # Keep all Metaflow writes under the host-mapped artifacts directory;
+    # jobs run as the numeric host UID/GID supplied by .env/runbook.
+    METAFLOW_DATASTORE_SYSROOT_LOCAL: /app/artifacts/plagiarism/metaflow
+    METAFLOW_CARD_LOCALROOT: /app/artifacts/plagiarism/mf.cards
+  volumes:
+    - type: bind
+      source: "${PROJECT_ROOT:-${PWD}}/plagiarism_data"
+      target: /app/plagiarism_data
+      read_only: true
+    - type: bind
+      source: "${PROJECT_ROOT:-${PWD}}/reports"
+      target: /app/reports
+    - type: bind
+      source: "${PROJECT_ROOT:-${PWD}}/artifacts/plagiarism"
+      target: /app/artifacts/plagiarism
+
 services:
   # Run explicitly before MLflow. This is the only root service and only
   # changes ownership inside the persistent tracking volume.
@@ -123,6 +161,176 @@ services:
     depends_on:
       mlflow:
         condition: service_healthy
+
+  # Deterministic PR/demo path: authored fixture inputs with a synthetic
+  # encoder; it still trains and scores with the same XGBoost implementation.
+  plagiarism-train-fixture:
+    <<: *plagiarism-runtime
+    profiles: [jobs]
+    command:
+      - python
+      - flows/train_plagiarism_flow.py
+      - run
+      - --data-dir
+      - /app/fixtures/plagiarism
+      - --config-path
+      - /app/config/plagiarism-fixture.yaml
+      - --tracking-uri
+      - http://mlflow:5000
+      - --cache-dir
+      - /app/artifacts/plagiarism/cache
+      - --result-path
+      - /app/reports/plagiarism/fixture-training-result.json
+      - --fixture
+      - "true"
+    volumes:
+      - type: bind
+        source: "${PROJECT_ROOT:-${PWD}}/reports"
+        target: /app/reports
+      - type: bind
+        source: "${PROJECT_ROOT:-${PWD}}/artifacts/plagiarism"
+        target: /app/artifacts/plagiarism
+      - type: bind
+        source: "${PROJECT_ROOT:-${PWD}}/fixtures/plagiarism"
+        target: /app/fixtures/plagiarism
+        read_only: true
+      - type: bind
+        source: "${PROJECT_ROOT:-${PWD}}/config/plagiarism-fixture.yaml"
+        target: /app/config/plagiarism-fixture.yaml
+        read_only: true
+    depends_on:
+      mlflow:
+        condition: service_healthy
+
+  plagiarism-fixture-workflow:
+    <<: *plagiarism-runtime
+    profiles: [jobs]
+    command:
+      - python
+      - scripts/plagiarism_fixture_workflow.py
+      - --tracking-uri
+      - http://mlflow:5000
+      - --output-dir
+      - /app/reports/plagiarism/fixture-workflow
+    volumes:
+      - type: bind
+        source: "${PROJECT_ROOT:-${PWD}}/reports"
+        target: /app/reports
+      - type: bind
+        source: "${PROJECT_ROOT:-${PWD}}/artifacts/plagiarism"
+        target: /app/artifacts/plagiarism
+      - type: bind
+        source: "${PROJECT_ROOT:-${PWD}}/fixtures/plagiarism"
+        target: /app/fixtures/plagiarism
+        read_only: true
+      - type: bind
+        source: "${PROJECT_ROOT:-${PWD}}/config/plagiarism-fixture.yaml"
+        target: /app/config/plagiarism-fixture.yaml
+        read_only: true
+    depends_on:
+      mlflow:
+        condition: service_healthy
+
+  # Real CPU MiniLM path. The encoder snapshot must be staged before this job;
+  # HF_HUB_OFFLINE and TRANSFORMERS_OFFLINE prevent runtime downloads.
+  plagiarism-train:
+    <<: *plagiarism-runtime
+    profiles: [jobs]
+    command:
+      - python
+      - flows/train_plagiarism_flow.py
+      - run
+      - --data-dir
+      - /app/plagiarism_data
+      - --config-path
+      - /app/config/plagiarism.yaml
+      - --tracking-uri
+      - http://mlflow:5000
+      - --cache-dir
+      - /app/artifacts/plagiarism/cache
+      - --result-path
+      - /app/reports/plagiarism/training-result.json
+      - --encoder-dir
+      - /app/models/minilm
+    volumes:
+      - type: bind
+        source: "${PROJECT_ROOT:-${PWD}}/plagiarism_data"
+        target: /app/plagiarism_data
+        read_only: true
+      - type: bind
+        source: "${PROJECT_ROOT:-${PWD}}/plagiarism_data.dvc"
+        target: /app/plagiarism_data.dvc
+        read_only: true
+      - type: bind
+        source: "${PROJECT_ROOT:-${PWD}}/models/minilm"
+        target: /app/models/minilm
+        read_only: true
+      - type: bind
+        source: "${PROJECT_ROOT:-${PWD}}/reports"
+        target: /app/reports
+      - type: bind
+        source: "${PROJECT_ROOT:-${PWD}}/artifacts/plagiarism"
+        target: /app/artifacts/plagiarism
+    depends_on:
+      mlflow:
+        condition: service_healthy
+
+  plagiarism-score:
+    <<: *plagiarism-runtime
+    profiles: [jobs]
+    entrypoint: [python, -m, plagiarism.score]
+    volumes:
+      - type: bind
+        source: "${PROJECT_ROOT:-${PWD}}/plagiarism_data"
+        target: /app/plagiarism_data
+        read_only: true
+      - type: bind
+        source: "${PROJECT_ROOT:-${PWD}}/models/minilm"
+        target: /app/models/minilm
+        read_only: true
+      - type: bind
+        source: "${PROJECT_ROOT:-${PWD}}/reports"
+        target: /app/reports
+      - type: bind
+        source: "${PROJECT_ROOT:-${PWD}}/artifacts/plagiarism"
+        target: /app/artifacts/plagiarism
+    depends_on:
+      mlflow:
+        condition: service_healthy
+
+  # Staging has outbound access only while this explicit command runs. The
+  # resulting snapshot is mounted read-only by all offline encoder jobs.
+  plagiarism-stage-encoder:
+    <<: *plagiarism-runtime
+    profiles: [staging]
+    command:
+      - python
+      - scripts/stage_plagiarism_encoder.py
+      - --revision
+      - ${PLAGIARISM_ENCODER_REVISION:-1110a243fdf4706b3f48f1d95db1a4f5529b4d41}
+      - --output-dir
+      - /app/models/minilm
+    environment:
+      HF_HUB_OFFLINE: "0"
+      TRANSFORMERS_OFFLINE: "0"
+    volumes:
+      - type: bind
+        source: "${PROJECT_ROOT:-${PWD}}/models/minilm"
+        target: /app/models/minilm
+
+  plagiarism-encoder-smoke:
+    <<: *plagiarism-runtime
+    profiles: [jobs]
+    command:
+      - python
+      - scripts/plagiarism_runtime_smoke.py
+      - --encoder-dir
+      - /app/models/minilm
+    volumes:
+      - type: bind
+        source: "${PROJECT_ROOT:-${PWD}}/models/minilm"
+        target: /app/models/minilm
+        read_only: true
 
 volumes:
   mlflow_data:

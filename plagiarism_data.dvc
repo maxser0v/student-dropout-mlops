@@ -1,0 +1,6 @@
+outs:
+- md5: e47839ffd1dd8bea7d53d313d2d1fc3e.dir
+  size: 34712286
+  nfiles: 1
+  hash: md5
+  path: plagiarism_data

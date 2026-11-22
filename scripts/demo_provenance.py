@@ -10,12 +10,12 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE_DIRS = (".github", "config", "docs", "flows", "scripts", "src", "tests")
+SOURCE_DIRS = (".github", "config", "docs", "flows", "plagiarism-runtime", "scripts", "src", "tests")
 IGNORED_SOURCE_PARTS = {"__pycache__", ".pytest_cache", ".venv", "node_modules", "reports", "outputs", ".metaflow", ".git"}
 IGNORED_SOURCE_NAMES = {".env", ".env.local", ".DS_Store"}
 ROOT_FILES = {
     ".dockerignore", ".env.example", ".gitignore", ".dvcignore", "data.dvc",
-    "Dockerfile", "Makefile", "README.md", "compose.yaml", "pyproject.toml",
+    "Dockerfile", "Dockerfile.plagiarism", "Makefile", "README.md", "compose.yaml", "pyproject.toml",
     "requirements.lock.txt", "uv.lock", ".python-version",
 }
 
