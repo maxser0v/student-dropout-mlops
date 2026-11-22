@@ -33,6 +33,12 @@ The held-out partition contained 405 submissions, 832 source documents, 1,018 ju
 
 Alert precision is the share of merged alerts that match an annotated span. Span recall is the share of annotated spans recovered by at least one alert. One submission can generate multiple alerts. The combined model recovered 997 spans, compared with 1,015 for MiniLM cosine and 1,030 for TF-IDF cosine. This measures passage alignment on the custom holdout conditional on PAN’s supplied document pairs. An open-corpus search or live university deployment would require a separate evaluation. [Scoring and evaluation code](../src/plagiarism/evaluation.py)
 
+## XGBoost tuning findings
+
+**The 50-tree model recovered the same 728 of 899 validation spans (81.0% recall) as the 80-tree model, with one additional false alert.** Both models used a maximum depth of 4. The 50-tree model used a learning rate of 0.14 and produced 94 false alerts. The 80-tree model used a learning rate of 0.08 and produced 93. This demonstrates a trade-off between the number of trees and false alerts at the same validation recall. [50-tree trial](http://127.0.0.1:5001/#/experiments/4/runs/a0b883aeba9b4b5a8d3d83e775bd0696) · [80-tree trial](http://127.0.0.1:5001/#/experiments/4/runs/4a3b193b95e44d0ba1b5f9307a3e40ea)
+
+The sweep compared 20 configurations on the same MiniLM candidates and selected each model’s threshold on validation. The 80-tree configuration ranked first on false alerts at or above version 1’s span recall. The held-out results above apply to version 1. [Full MLflow sweep](http://127.0.0.1:5001/#/experiments/4/runs/cbe82b67a5fb46ba9dcaf922d69063ef)
+
 ## Verification and evidence
 
 - All 92 repository tests passed, including a regression test for deterministic group splitting. All 22 plagiarism tests also passed in the isolated runtime. [Test suite](../tests/test_plagiarism_data.py)
