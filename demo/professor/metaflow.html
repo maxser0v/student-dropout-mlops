@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Metaflow Pipeline · Report Review</title>
+<style>
+  :root { color-scheme: light dark; font: 16px/1.55 system-ui, sans-serif; }
+  body { margin: 0; color: light-dark(#1d2b2a,#ecf2ed); background: light-dark(#f6f7f4,#181c1b); }
+  main { max-width: 44rem; margin-inline: auto; padding: 2rem 1rem; }
+  a, code { color: light-dark(#174b43,#a3dccb); }
+  h1 { margin-bottom: .25rem; letter-spacing: -.035em; }
+  p { margin: .5rem 0 1rem; }
+  ol { margin: 1.25rem 0; padding-inline-start: 1.5rem; }
+  li { border-bottom: 1px solid light-dark(#dce4df,#38423f); padding: .65rem .5rem; }
+  code { font-weight: 650; }
+</style>
+</head>
+<body>
+<main>
+  <a href="./">Back to Report Review</a>
+  <h1>Metaflow pipeline</h1>
+  <p>This walkthrough follows the recorded rehearsal <code>1795422454480757</code>. The rehearsal used synthetic reports, real XGBoost training, and a stand-in for the MiniLM encoder.</p>
+  <ol>
+    <li><code>start</code> loads configuration and opens the experiment run.</li>
+    <li><code>validate</code> checks the inputs and training and validation splits.</li>
+    <li><code>prepare</code> retrieves candidate passages and generates similarity features. The full pipeline uses frozen MiniLM here.</li>
+    <li><code>train</code> fits the XGBoost classifier using reviewed examples.</li>
+    <li><code>log_model</code> logs and reloads the candidate to verify its predictions.</li>
+    <li><code>evaluate</code> selects a review threshold on the validation set and measures recall and false alerts.</li>
+    <li><code>gate</code> applies the release criteria to the validation results.</li>
+    <li><code>register</code> registers a candidate when it qualifies.</li>
+    <li><code>end</code> records the decision and run identifiers.</li>
+  </ol>
+  <p><a href="https://github.com/maxser0v/student-dropout-mlops/blob/main/docs/PLAGIARISM_PROFESSOR_DEMO.md#3-walk-through-metaflow">Reproduce the rehearsal and open its Metaflow card</a></p>
+</main>
+</body>
+</html>

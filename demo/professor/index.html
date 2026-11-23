@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Professor Training Demo</title>
+<style>
+#professor-preview {
+  color-scheme: light dark;
+  --paper: light-dark(#f6f7f4, #181c1b);
+  --surface: light-dark(#fff, #222827);
+  --ink: light-dark(#1d2b2a, #ecf2ed);
+  --muted: light-dark(#526360, #aab9b4);
+  --line: light-dark(#dce4df, #38423f);
+  --action: light-dark(#174b43, #a3dccb);
+  --on-action: light-dark(#fff, #17322c);
+  --soft: light-dark(#e7f1ec, #2b403a);
+  --highlight: light-dark(#f6edce, #51452b);
+  box-sizing: border-box;
+  background: var(--paper);
+  color: var(--ink);
+  font: 14px/1.5 system-ui, sans-serif;
+}
+#professor-preview *, #professor-preview *::before, #professor-preview *::after { box-sizing: border-box; }
+#professor-preview [hidden] { display: none !important; }
+#professor-preview h1, #professor-preview h2, #professor-preview h3, #professor-preview p { margin: 0; color: inherit; }
+#professor-preview h1 { font-size: clamp(25px, 4vw, 34px); line-height: 1.15; font-weight: 650; letter-spacing: -.045em; }
+#professor-preview h2 { font-size: 18px; font-weight: 650; }
+#professor-preview h3 { font-size: 14px; font-weight: 650; }
+#professor-preview .pp-bar { background: var(--surface); padding: 14px 24px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 12px; }
+#professor-preview .pp-symbol { width: 36px; height: 36px; border-radius: 9px; display: grid; place-items: center; color: var(--on-action); background: var(--action); flex: none; }
+#professor-preview .pp-brand { font-weight: 700; }
+body { margin: 0; background: light-dark(#f6f7f4, #181c1b); color-scheme: light dark; }
+#professor-preview .pp-flow-link { color: var(--action); font-weight: 600; padding: 8px 12px; }
+#professor-preview .pp-demo { margin-left: 10px; }
+#professor-preview .pp-shell { display: grid; grid-template-columns: 174px minmax(0, 1fr); }
+#professor-preview .pp-nav { background: var(--surface); border-right: 1px solid var(--line); padding: 22px 12px; display: flex; flex-direction: column; gap: 4px; }
+#professor-preview button { font: inherit; font-weight: 600; min-height: 40px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px 13px; }
+#professor-preview button:not(:disabled) { cursor: pointer; }
+#professor-preview button:disabled { opacity: .55; }
+#professor-preview button:not(:disabled):hover { box-shadow: inset 0 0 0 1px currentColor; }
+#professor-preview .pp-nav button { display: flex; align-items: center; gap: 9px; text-align: left; border-color: transparent; color: var(--muted); }
+#professor-preview .pp-nav button[aria-current="page"] { background: var(--soft); color: var(--action); }
+#professor-preview button.pp-primary { background: var(--action); color: var(--on-action); border-color: var(--action); }
+#professor-preview button[aria-pressed="true"] { box-shadow: inset 0 0 0 2px var(--action); }
+#professor-preview .pp-main { padding: clamp(16px, 3vw, 32px); min-width: 0; min-height: 470px; }
+#professor-preview .pp-heading { display: grid; gap: 6px; margin-bottom: 22px; }
+#professor-preview .pp-kicker { color: var(--action); font-size: 12px; font-weight: 700; letter-spacing: .055em; }
+#professor-preview .pp-muted { color: var(--muted); font-size: 13px; }
+#professor-preview .pp-card { padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); min-width: 0; }
+#professor-preview .pp-row { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+#professor-preview .pp-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 12px 0; }
+#professor-preview .pp-passage { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); font: 16px/1.6 Georgia, serif; }
+#professor-preview mark { padding: 1px 2px; border-radius: 2px; background: var(--highlight); color: var(--ink); box-decoration-break: clone; }
+#professor-preview .pp-pill { display: inline-block; padding: 3px 8px; border-radius: 999px; color: var(--action); background: var(--soft); font-size: 12px; font-weight: 650; }
+#professor-preview .pp-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+#professor-preview .pp-check { display: flex; align-items: center; gap: 7px; min-height: 36px; }
+#professor-preview input { accent-color: var(--action); }
+#professor-preview .pp-status { min-height: 20px; margin-top: 8px; }
+#professor-preview .pp-table { width: 100%; border-collapse: collapse; overflow-wrap: anywhere; }
+#professor-preview .pp-table th, #professor-preview .pp-table td { padding: 9px 6px; border-bottom: 1px solid var(--line); text-align: left; }
+#professor-preview .pp-table tr:last-child td { border-bottom: 0; }
+#professor-preview .pp-model th:not(:first-child), #professor-preview .pp-model td:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
+#professor-preview .pp-stack { display: grid; gap: 12px; }
+#professor-preview progress { width: 100%; height: 8px; accent-color: var(--action); }
+#professor-preview .pp-steps { display: grid; gap: 6px; list-style: none; padding: 0; margin: 0; }
+#professor-preview .pp-steps li[data-current="true"] { font-weight: 700; color: var(--action); }
+#professor-preview .pp-steps li[data-done="true"]::after { content: " · Done"; color: var(--action); }
+@media (max-width: 720px) {
+  #professor-preview .pp-shell { grid-template-columns: minmax(0, 1fr); }
+  #professor-preview .pp-nav { flex-direction: row; flex-wrap: wrap; border-right: 0; border-bottom: 1px solid var(--line); padding: 7px 12px; }
+}
+@media (max-width: 520px) {
+  #professor-preview .pp-columns { grid-template-columns: minmax(0, 1fr); }
+  #professor-preview .pp-bar { flex-wrap: wrap; padding-inline: 14px; }
+}
+@media (pointer: coarse) {
+  #professor-preview button, #professor-preview .pp-check { min-height: 44px; }
+}
+</style>
+</head>
+<body>
+<div id="professor-preview" aria-label="Professor training workspace preview">
+  <header class="pp-bar">
+    <span class="pp-symbol" aria-hidden="true">RR</span>
+    <div class="pp-brand">Report Review</div>
+    <span class="pp-pill pp-demo">Interactive demo</span>
+  </header>
+  <div class="pp-shell">
+    <nav class="pp-nav" aria-label="Professor workspace">
+      <button type="button" data-open="reports">Reports</button>
+      <button type="button" data-open="review" aria-current="page">Review</button>
+      <button type="button" data-open="training">Training</button>
+      <a class="pp-flow-link" href="./metaflow.html">Metaflow pipeline</a>
+    </nav>
+    <main class="pp-main">
+      <section data-screen="reports" hidden>
+        <div class="pp-heading">
+          <span class="pp-kicker">RENEWABLE ENERGY · ASSIGNMENT 2</span>
+          <h1>Group reports</h1>
+          <p class="pp-muted">The sample reports are ready to check for matching passages.</p>
+        </div>
+        <div class="pp-card">
+          <table class="pp-table" aria-label="Sample group submissions">
+            <thead><tr><th scope="col">Group</th><th scope="col">Submission</th></tr></thead>
+            <tbody>
+              <tr><td>Group A</td><td>Rooftop solar.pdf</td></tr>
+              <tr><td>Group B</td><td>Solar panel performance.pdf</td></tr>
+              <tr><td>Group C</td><td>Battery storage.pdf</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="pp-actions"><button class="pp-primary" type="button" data-open="review">Check reports</button></div>
+      </section>
+      <section data-screen="review">
+        <div class="pp-heading">
+          <span class="pp-kicker">RENEWABLE ENERGY · ASSIGNMENT 2</span>
+          <h1>Review matching passages</h1>
+          <p class="pp-muted">Compare the two excerpts and record your judgment.</p>
+        </div>
+        <div class="pp-row">
+          <h2 data-pair-title>Match 1 of 2</h2>
+          <button type="button" data-next>Next match <span aria-hidden="true">→</span></button>
+        </div>
+        <div class="pp-columns">
+          <article class="pp-card">
+            <h3>Group A</h3>
+            <p class="pp-muted">Rooftop solar.pdf</p>
+            <div class="pp-passage" data-passage-a></div>
+          </article>
+          <article class="pp-card">
+            <h3 data-other-group>Group B</h3>
+            <p class="pp-muted" data-other-file>Solar panel performance.pdf</p>
+            <div class="pp-passage" data-passage-b></div>
+          </article>
+        </div>
+        <div class="pp-actions" aria-label="Review decision">
+          <button type="button" class="pp-primary" data-decision="reuse" aria-pressed="false">Confirm reuse</button>
+          <button type="button" data-decision="clear" aria-pressed="false">No reuse</button>
+          <button type="button" data-decision="unsure" aria-pressed="false">Unsure</button>
+        </div>
+        <label class="pp-check" data-clear-note hidden>
+          <input type="checkbox" data-full-review> I reviewed the full report pair.
+        </label>
+        <p class="pp-muted pp-status" data-review-status aria-live="polite"></p>
+        <div class="pp-actions"><button type="button" data-open="training">Go to training <span aria-hidden="true">→</span></button></div>
+      </section>
+      <section data-screen="training" hidden>
+        <div class="pp-heading">
+          <span class="pp-kicker">MODEL MANAGEMENT</span>
+          <h1>Train a new model</h1>
+          <p class="pp-muted">Use reviewed examples to train XGBoost with the existing MiniLM encoder.</p>
+        </div>
+        <div class="pp-stack">
+          <div class="pp-card pp-stack">
+            <div class="pp-row"><h2>Training examples</h2><span class="pp-pill">Sample dataset</span></div>
+            <p data-label-count>24 confirmed reuse examples · 24 reviewed no-reuse pairs</p>
+            <div><button type="button" class="pp-primary" data-train>Train a new model</button></div>
+          </div>
+          <div class="pp-card pp-stack" data-progress hidden>
+            <div class="pp-row"><h2>Training run</h2><a class="pp-flow-link" href="./metaflow.html">See Metaflow steps</a></div>
+            <progress max="4" value="0" aria-label="Training run progress"></progress>
+            <ol class="pp-steps">
+              <li>Validate the training examples</li>
+              <li>Generate features with MiniLM</li>
+              <li>Train the XGBoost model</li>
+              <li>Evaluate on held-out examples</li>
+            </ol>
+            <p class="pp-muted" data-run-status aria-live="polite">Ready</p>
+          </div>
+          <div class="pp-card pp-stack" data-results hidden>
+            <div class="pp-row"><h2>Model comparison</h2><span class="pp-pill" data-candidate-state>Ready for approval</span></div>
+            <table class="pp-table pp-model" aria-label="Illustrative model comparison on the same held-out examples">
+              <thead><tr><th scope="col">Metric</th><th scope="col" data-current-column>Active model</th><th scope="col" data-new-column>Candidate</th></tr></thead>
+              <tbody><tr><td>Reuse passages found</td><td>34 of 40</td><td>36 of 40</td></tr><tr><td>False alerts</td><td>8</td><td>6</td></tr></tbody>
+            </table>
+            <p class="pp-muted">Illustrative results on the same held-out examples.</p>
+            <div><button type="button" data-approve>Approve candidate</button></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+<script>
+(() => {
+  const root = document.getElementById('professor-preview');
+  const find = (name) => root.querySelector(name);
+  const pairs = [
+    {
+      group: 'Group B',
+      file: 'Solar panel performance.pdf',
+      first: 'On hot afternoons, <mark>the panels produce less electricity as their temperature rises</mark>. A gap under the panels allows air to circulate.',
+      second: 'During the hottest part of the day, <mark>the panels generate less power as they heat up</mark>. Leaving space below them helps air move freely.',
+      decision: null,
+      fullReview: false
+    },
+    {
+      group: 'Group C',
+      file: 'Battery storage.pdf',
+      first: 'The system can <mark>reduce demand on the grid</mark> while the rooftop panels are producing electricity at midday.',
+      second: 'The battery can <mark>reduce demand on the grid</mark> by storing electricity for use during the evening peak.',
+      decision: null,
+      fullReview: false
+    }
+  ];
+  const nav = root.querySelectorAll('.pp-nav button');
+  const panels = root.querySelectorAll('[data-screen]');
+  const decisions = root.querySelectorAll('[data-decision]');
+  let activePair = 0;
+
+  function updateCounts() {
+    const reuse = pairs.filter((pair) => pair.decision === 'reuse').length;
+    const noReuse = pairs.filter((pair) => pair.decision === 'clear' && pair.fullReview).length;
+    find('[data-label-count]').textContent = `${24 + reuse} confirmed reuse examples · ${24 + noReuse} reviewed no-reuse pairs`;
+  }
+
+  function renderPair() {
+    const pair = pairs[activePair];
+    find('[data-pair-title]').textContent = `Match ${activePair + 1} of ${pairs.length}`;
+    find('[data-next]').innerHTML = activePair === 0 ? 'Next match <span aria-hidden="true">→</span>' : '<span aria-hidden="true">←</span> Previous match';
+    find('[data-other-group]').textContent = pair.group;
+    find('[data-other-file]').textContent = pair.file;
+    find('[data-passage-a]').innerHTML = pair.first;
+    find('[data-passage-b]').innerHTML = pair.second;
+    find('[data-clear-note]').hidden = pair.decision !== 'clear';
+    find('[data-full-review]').checked = pair.fullReview;
+    decisions.forEach((button) => {
+      button.setAttribute('aria-pressed', String(pair.decision === button.dataset.decision));
+    });
+    const reviewMessages = {
+      reuse: 'Confirmed reuse saved as a training example.',
+      clear: pair.fullReview ? 'Reviewed no-reuse pair saved as a training example.' : 'Confirm a full pair review to use this example for training.',
+      unsure: 'Marked unsure and skipped for training.'
+    };
+    find('[data-review-status]').textContent = reviewMessages[pair.decision] || '';
+    updateCounts();
+  }
+
+  function show(screen) {
+    panels.forEach((panel) => { panel.hidden = panel.dataset.screen !== screen; });
+    nav.forEach((button) => {
+      if (button.dataset.open === screen) button.setAttribute('aria-current', 'page');
+      else button.removeAttribute('aria-current');
+    });
+  }
+
+  root.querySelectorAll('[data-open]').forEach((button) => {
+    button.addEventListener('click', () => show(button.dataset.open));
+  });
+  find('[data-next]').addEventListener('click', () => {
+    activePair = (activePair + 1) % pairs.length;
+    renderPair();
+  });
+  decisions.forEach((button) => {
+    button.addEventListener('click', () => {
+      pairs[activePair].decision = button.dataset.decision;
+      if (button.dataset.decision !== 'clear') pairs[activePair].fullReview = false;
+      renderPair();
+    });
+  });
+  find('[data-full-review]').addEventListener('change', (event) => {
+    pairs[activePair].fullReview = event.target.checked;
+    renderPair();
+  });
+
+  const train = find('[data-train]');
+  const stages = root.querySelectorAll('.pp-steps li');
+  const progress = find('progress');
+  const runStatus = find('[data-run-status]');
+  train.addEventListener('click', () => {
+    train.disabled = true;
+    train.textContent = 'Training…';
+    find('[data-progress]').hidden = false;
+    let stage = 0;
+
+    function advance() {
+      progress.value = stage;
+      stages.forEach((item, index) => {
+        item.dataset.done = String(index < stage);
+        item.dataset.current = String(index === stage);
+      });
+      if (stage < stages.length) {
+        runStatus.textContent = stages[stage].textContent;
+        stage += 1;
+        setTimeout(advance, 650);
+      } else {
+        runStatus.textContent = 'Evaluation complete.';
+        train.textContent = 'Training complete';
+        find('[data-results]').hidden = false;
+      }
+    }
+
+    advance();
+  });
+
+  find('[data-approve]').addEventListener('click', (event) => {
+    find('[data-candidate-state]').textContent = 'Candidate approved in demo';
+    find('[data-current-column]').textContent = 'Previous model';
+    find('[data-new-column]').textContent = 'Active model';
+    event.target.textContent = 'Approved';
+    event.target.disabled = true;
+  });
+
+  renderPair();
+})();
+</script>
+</body>
+</html>

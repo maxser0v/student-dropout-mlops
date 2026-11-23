@@ -27,10 +27,10 @@ if str(ROOT / "src") not in sys.path:
 
 from plagiarism.candidates import (build_source_index, manifest_sha256,
                                    prepare_split_candidates, prepare_tfidf_candidates)
-from plagiarism.data import assign_splits, filter_corpus, load_corpus, load_pan
+from plagiarism.data import assign_splits, filter_corpus, load_corpus, load_corpus_bytes, load_pan
 from dropout.lineage import collect_source_lineage, verify_dvc_directory
 from plagiarism.evaluation import (candidate_labels, choose_shared_recall_thresholds,
-                                   evaluate_release_gate, merge_alerts,
+                                   evaluate_at_threshold, evaluate_release_gate, merge_alerts,
                                    retrieval_link_recall)
 from plagiarism.features import FEATURE_NAMES, FeaturePipeline
 from plagiarism.retrieval import (FixtureEncoder, MiniLMEncoder, chunking_config,
@@ -58,12 +58,14 @@ def _config(path: str) -> tuple[dict[str, Any], str]:
     return value, hashlib.sha256(raw).hexdigest()
 
 
-def _load_data(path: Path, validation_fraction: float, seed: int, *, fixture: bool = False):
+def _load_data(path: Path, validation_fraction: float, seed: int, *, fixture: bool = False,
+               verified_manifest_bytes: bytes | None = None):
     if path.is_dir():
         names = ("fixture.json", "manifest.json") if fixture else ("pan13.json", "manifest.json")
         manifest = next((path / name for name in names if (path / name).is_file()), None)
         if manifest is not None:
-            corpus = load_corpus(manifest)
+            corpus = (load_corpus_bytes(verified_manifest_bytes, source=str(manifest))
+                      if verified_manifest_bytes is not None else load_corpus(manifest))
         else:
             candidates = sorted(path.glob("*.zip"))
             if not candidates:
@@ -72,7 +74,8 @@ def _load_data(path: Path, validation_fraction: float, seed: int, *, fixture: bo
             corpus = load_pan(manifest)
     elif path.suffix.lower() == ".json":
         manifest = path
-        corpus = load_corpus(path)
+        corpus = (load_corpus_bytes(verified_manifest_bytes, source=str(path))
+                  if verified_manifest_bytes is not None else load_corpus(path))
     else:
         manifest = None
         corpus = load_pan(path)
@@ -84,6 +87,66 @@ def _load_data(path: Path, validation_fraction: float, seed: int, *, fixture: bo
     # across Metaflow steps. The test manifest remains available for its single
     # separately invoked final evaluation.
     return filter_corpus(corpus, include_splits=("train", "validation")), manifest
+
+
+def _json_manifest_for(path: Path, *, fixture: bool) -> Path | None:
+    if path.is_dir():
+        names = ("fixture.json", "manifest.json") if fixture else ("pan13.json", "manifest.json")
+        return next((path / name for name in names if (path / name).is_file()), None)
+    return path if path.suffix.lower() == ".json" else None
+
+
+def _platform_scope(lineage: dict[str, Any]) -> dict[str, str]:
+    raw = lineage.get("scope")
+    fields = ("institution_id", "course_id", "assignment_id")
+    if not isinstance(raw, dict) or any(not isinstance(raw.get(key), str) or not raw[key].strip() for key in fields):
+        raise ValueError("platform-reviewed corpus lineage requires institution, course, and assignment scope")
+    return {key: raw[key] for key in fields}
+
+
+def _validate_sha256(value: str | None, option: str) -> str | None:
+    if value is None:
+        return None
+    if len(value) != 64 or any(char not in "0123456789abcdefABCDEF" for char in value):
+        raise ValueError(f"{option} must be a 64-character SHA-256 hex digest")
+    return value.lower()
+
+
+def _validate_active_bundle(bundle: dict[str, Any], *, model_name: str, model_version: str,
+                            target_version: str, feature_schema_version: str,
+                            encoder_revision: str, chunking: dict[str, int], top_k: int,
+                            fixture_model_name: str, fixture: bool,
+                            platform_scope: dict[str, str] | None) -> dict[str, Any]:
+    if bundle.get("model_name") != model_name or str(bundle.get("model_version")) != model_version:
+        raise ValueError("verified active bundle does not match the requested model version")
+    lineage = bundle.get("lineage", {})
+    lineage = lineage if isinstance(lineage, dict) else {}
+    active_scope = lineage.get("platform_scope")
+    if active_scope is not None:
+        fields = ("institution_id", "course_id", "assignment_id")
+        if (not isinstance(active_scope, dict)
+                or any(not isinstance(active_scope.get(key), str) or not active_scope[key].strip()
+                       for key in fields)):
+            raise ValueError("active model has malformed platform_scope lineage")
+        if platform_scope is None:
+            raise ValueError("platform-scoped active model cannot be compared in a non-platform run")
+        if active_scope != platform_scope:
+            raise ValueError("active model platform_scope does not match this reviewed assignment")
+    if (bool(lineage.get("fixture", False)) != fixture
+            or (model_name == fixture_model_name) != fixture):
+        raise ValueError("active model fixture namespace is incompatible with this training run")
+    if (bundle.get("target_version") != target_version
+            or bundle.get("feature_schema_version") != feature_schema_version):
+        raise ValueError("active model target or feature schema is incompatible with the candidate")
+    if (bundle.get("encoder_revision") != encoder_revision
+            or bundle.get("chunking_config") != chunking
+            or bundle.get("retrieval_top_k") != top_k):
+        raise ValueError("active model encoder or retrieval configuration is incompatible with the candidate")
+    threshold = bundle.get("threshold")
+    if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not np.isfinite(threshold):
+        raise ValueError("verified active model has no deployed numeric threshold")
+    return {"model_name": model_name, "model_version": model_version,
+            "deployed_threshold": float(threshold), "platform_scope": active_scope}
 
 
 def _split_data(corpus, split: str):
@@ -122,6 +185,10 @@ class PlagiarismTrainingFlow(FlowSpec):
     result_path = Parameter("result-path", default=None, help="Optional run summary JSON path")
     encoder_dir = Parameter("encoder-dir", default=None, help="Path to staged frozen MiniLM snapshot")
     fixture = Parameter("fixture", default=False, type=bool, help="Use deterministic fixture encoder")
+    active_model_name = Parameter("active-model-name", default=None, help="Registered active model namespace for comparison")
+    active_model_version = Parameter("active-model-version", default=None, help="Concrete active registry version for comparison")
+    platform_snapshot_sha256 = Parameter("platform-snapshot-sha256", default=None,
+                                         help="Trusted SHA-256 of the immutable platform snapshot manifest")
 
     @_failed_run_guard
     @step
@@ -135,27 +202,78 @@ class PlagiarismTrainingFlow(FlowSpec):
         self.report_root = str((Path(self.cache_root).parent / "reports" / self.flow_run_id).resolve())
         Path(self.report_root).mkdir(parents=True, exist_ok=True)
         self.encoder_revision = "fixture-hash-encoder-v1" if self.fixture else str(self.config.get("encoder", {}).get("revision", "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"))
+        self.normalized_active_model_name = self.active_model_name
+        self.normalized_active_model_version = self.active_model_version
+        self.verified_platform_snapshot_sha256 = _validate_sha256(
+            self.platform_snapshot_sha256, "--platform-snapshot-sha256")
+        if (self.normalized_active_model_name is None) != (self.normalized_active_model_version is None):
+            raise ValueError("--active-model-name and --active-model-version must be supplied together")
+        if self.normalized_active_model_name is not None:
+            if not isinstance(self.normalized_active_model_name, str) or not self.normalized_active_model_name.strip():
+                raise ValueError("--active-model-name must be a concrete non-empty model name")
+            self.normalized_active_model_name = self.normalized_active_model_name.strip()
+            if (not isinstance(self.normalized_active_model_version, str) or not self.normalized_active_model_version.isdecimal()
+                    or int(self.normalized_active_model_version) < 1):
+                raise ValueError("--active-model-version must be a concrete positive registry version")
+            self.normalized_active_model_version = str(int(self.normalized_active_model_version))
+        manifest_before_parse = _json_manifest_for(Path(self.data_path), fixture=bool(self.fixture))
+        self.is_platform_run = False
+        self.platform_scope = None
+        if manifest_before_parse is not None:
+            # Read only the lineage header first. If it declares platform input, verify
+            # the exact bytes against the trusted worker argument before loading corpus data.
+            manifest_bytes = manifest_before_parse.read_bytes()
+            if (self.verified_platform_snapshot_sha256 is not None
+                    and hashlib.sha256(manifest_bytes).hexdigest() != self.verified_platform_snapshot_sha256):
+                raise ValueError("platform snapshot manifest does not match trusted --platform-snapshot-sha256")
+            header = json.loads(manifest_bytes)
+            lineage_header = header.get("lineage", {}) if isinstance(header, dict) else {}
+            protocol = lineage_header.get("evaluation_protocol") if isinstance(lineage_header, dict) else None
+            self.is_platform_run = protocol == "platform-reviewed-grouped"
+            if self.is_platform_run:
+                if self.verified_platform_snapshot_sha256 is None:
+                    raise ValueError("platform-reviewed training requires --platform-snapshot-sha256")
+                self.platform_scope = _platform_scope(lineage_header)
+                if self.fixture:
+                    raise ValueError("platform-reviewed training cannot use the fixture encoder namespace")
+                if self.normalized_active_model_name is None:
+                    raise ValueError("platform-reviewed training requires explicit active model name and version")
+            elif self.verified_platform_snapshot_sha256 is not None:
+                raise ValueError("--platform-snapshot-sha256 is only valid for platform-reviewed snapshots")
+        elif self.verified_platform_snapshot_sha256 is not None:
+            raise ValueError("--platform-snapshot-sha256 requires a JSON platform snapshot manifest")
         self.corpus, self.manifest_path = _load_data(Path(self.data_path),
                                                      float(self.config["data"]["validation_fraction"]),
                                                      int(self.config["data"]["split_seed"]),
-                                                     fixture=bool(self.fixture))
+                                                     fixture=bool(self.fixture),
+                                                     verified_manifest_bytes=(manifest_bytes if self.is_platform_run else None))
         is_fixture_data = bool(self.corpus.lineage.get("fixture")) or "fixture" in str(self.corpus.lineage.get("dataset", "")).lower()
         if is_fixture_data and not self.fixture:
             raise ValueError("fixture corpus requires explicit --fixture encoder mode")
         if self.fixture and self.config["model_name"] != self.config["data"]["fixture_model_name"]:
             raise ValueError("fixture runs must use the isolated passage-reuse-fixture model namespace")
+        if self.is_platform_run and self.corpus.lineage.get("evaluation_protocol") != "platform-reviewed-grouped":
+            raise ValueError("platform snapshot lineage changed during corpus loading")
+        if self.is_platform_run and self.manifest_path and _sha256(Path(self.manifest_path)) != self.verified_platform_snapshot_sha256:
+            raise ValueError("platform snapshot manifest changed after its trusted hash check")
+        self.candidate_model_name = self.config["model_name"]
+        if self.is_platform_run:
+            scope_key = json.dumps(self.platform_scope, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            self.candidate_model_name = f"{self.config['model_name']}-platform-{hashlib.sha256(scope_key).hexdigest()[:12]}"
         mlflow.set_tracking_uri(self.tracking_uri)
         client = MlflowClient(tracking_uri=self.tracking_uri)
-        experiment_name = str(self.config.get("experiment_name", self.config["model_name"]))
+        experiment_name = (self.candidate_model_name if self.is_platform_run
+                           else str(self.config.get("experiment_name", self.candidate_model_name)))
         experiment = client.get_experiment_by_name(experiment_name)
         experiment_id = experiment.experiment_id if experiment else client.create_experiment(experiment_name)
         run = client.create_run(experiment_id, run_name=f"plagiarism-{self.flow_run_id}", tags={
             "metaflow.flow": str(current.flow_name), "metaflow.run_id": self.flow_run_id,
-            "model.namespace": self.config["model_name"], "fixture": str(bool(self.fixture)).lower(),
+            "model.namespace": self.candidate_model_name, "fixture": str(bool(self.fixture)).lower(),
             "evaluation.protocol": self.corpus.lineage.get(
                 "evaluation_protocol", "authored-fixture" if self.fixture else "pan13-official-test"),
             "target_version": self.config["target"]["version"],
             "feature_schema_version": self.config["feature_schema"]["version"],
+            "training.origin": "platform" if self.is_platform_run else "repository",
         })
         self.mlflow_run_id = run.info.run_id
         self.next(self.validate)
@@ -184,6 +302,12 @@ class PlagiarismTrainingFlow(FlowSpec):
         self.source_lineage = collect_source_lineage(ROOT)
         if self.fixture:
             self.dvc_verification = {"passed": True, "fixture_exempt": True}
+        elif self.is_platform_run:
+            current_sha = _sha256(Path(self.manifest_path))
+            if current_sha != self.verified_platform_snapshot_sha256:
+                raise ValueError("platform snapshot manifest changed before data validation")
+            self.dvc_verification = {"passed": True, "method": "trusted-platform-manifest-sha256",
+                                     "manifest_sha256": current_sha}
         else:
             data_root = Path(self.data_path)
             if data_root.is_file():
@@ -201,6 +325,8 @@ class PlagiarismTrainingFlow(FlowSpec):
             "source_manifest_sha256": self.source_manifest_hash,
             "source_lineage": self.source_lineage,
             "dvc_verification": self.dvc_verification,
+            "platform_snapshot_sha256": self.verified_platform_snapshot_sha256 if self.is_platform_run else None,
+            "platform_scope": self.platform_scope,
             "document_count": len(self.corpus.documents),
             "annotation_count": len(self.corpus.annotations),
             "pair_count": len(self.corpus.pairs),
@@ -213,6 +339,8 @@ class PlagiarismTrainingFlow(FlowSpec):
         try:
             mlflow.log_params({"config_sha256": self.config_sha256, "source_manifest_sha256": self.source_manifest_hash,
                                "encoder_revision": self.encoder_revision, "seed": self.config["seed"],
+                               "active_model_name": self.normalized_active_model_name or "",
+                               "active_model_version": self.normalized_active_model_version or "",
                                "train_documents": len(self.train_corpus.documents),
                                "validation_documents": len(self.validation_corpus.documents),
                                "train_pairs": len(self.train_corpus.pairs),
@@ -379,6 +507,39 @@ class PlagiarismTrainingFlow(FlowSpec):
             "minilm_xgboost": (self.validation_rows, model_scores),
         }
         eligible = [doc.id for doc in self.validation_corpus.documents.values() if doc.role == "submission"]
+        self.active_model_details = None
+        self.active_model_error = None
+        self.active_deployed_metrics = None
+        if self.normalized_active_model_name is not None:
+            try:
+                from plagiarism.score import load_verified_model
+
+                mlflow.set_tracking_uri(self.tracking_uri)
+                client = MlflowClient(tracking_uri=self.tracking_uri)
+                active_model, active_bundle, active_features, _active_encoder = load_verified_model(
+                    client, self.normalized_active_model_name, self.normalized_active_model_version,
+                    fixture=bool(self.fixture), encoder_dir=self.encoder_dir or "/app/models/minilm")
+                active_metadata = _validate_active_bundle(
+                    active_bundle, model_name=self.normalized_active_model_name,
+                    model_version=self.normalized_active_model_version,
+                    target_version=self.config["target"]["version"],
+                    feature_schema_version=self.config["feature_schema"]["version"],
+                    encoder_revision=self.encoder_revision, chunking=self.chunking_config,
+                    top_k=int(settings["top_k"]),
+                    fixture_model_name=self.config["data"]["fixture_model_name"],
+                    fixture=bool(self.fixture), platform_scope=self.platform_scope)
+                active_scores = positive_class_probability(
+                    active_model, active_features.transform_pairs(self.validation_rows))
+                score_sets["active_xgboost"] = (self.validation_rows, active_scores)
+                self.active_model_details = active_metadata
+                self.active_deployed_metrics = evaluate_at_threshold(
+                    self.validation_rows, active_scores, active_metadata["deployed_threshold"],
+                    self.validation_corpus.annotations, eligible_submissions=eligible,
+                    min_span_coverage=float(settings["min_span_coverage"]))
+            except Exception as exc:
+                # Preserve a machine-readable failed gate report for broken or
+                # incompatible active releases; never silently compare another model.
+                self.active_model_error = f"{type(exc).__name__}: {exc}"
         self.threshold_selection_error = None
         try:
             shared, choices = choose_shared_recall_thresholds(
@@ -391,6 +552,16 @@ class PlagiarismTrainingFlow(FlowSpec):
             self.threshold = float(choices["minilm_xgboost"]["threshold"])
             self.baseline_metrics = choices["minilm_cosine"]
             self.validation_metrics = choices["minilm_xgboost"]
+            active_comparison = None
+            if self.active_model_details is not None:
+                active_shared = choices["active_xgboost"]
+                active_comparison = {**self.active_model_details,
+                                     "shared_recall": active_shared,
+                                     "deployed_threshold_metrics": self.active_deployed_metrics}
+            elif self.active_model_error:
+                active_comparison = {"model_name": self.normalized_active_model_name,
+                                     "model_version": self.normalized_active_model_version,
+                                     "error": self.active_model_error}
             self.candidate_metrics = {
                 "target_version": self.config["target"]["version"],
                 "feature_schema_version": self.config["feature_schema"]["version"],
@@ -408,6 +579,7 @@ class PlagiarismTrainingFlow(FlowSpec):
                 "validation_candidate_count": len(self.validation_rows),
                 "validation_submission_count": len(eligible),
                 "ambiguous_training_candidates_excluded": self.ambiguous_training_candidates,
+                "active_model_comparison": active_comparison,
             }
         except ValueError as exc:
             self.threshold_selection_error = str(exc)
@@ -423,6 +595,14 @@ class PlagiarismTrainingFlow(FlowSpec):
                 "threshold_selection_error": self.threshold_selection_error,
                 "retrieval_recall_at_10": self.validation_link_recall["recall_at_k"],
                 "retrieval_missed_links": self.validation_link_recall["missed_links"],
+                "active_model_comparison": ({**self.active_model_details,
+                                             "shared_recall": None,
+                                             "deployed_threshold_metrics": self.active_deployed_metrics}
+                                            if self.active_model_details else
+                                            ({"model_name": self.normalized_active_model_name,
+                                              "model_version": self.normalized_active_model_version,
+                                              "error": self.active_model_error}
+                                             if self.active_model_error else None)),
             }
         self.next(self.gate)
 
@@ -432,10 +612,15 @@ class PlagiarismTrainingFlow(FlowSpec):
         self.gate_report = evaluate_release_gate(
             self.candidate_metrics, self.config,
             data_checks_passed=True,
-            artifact_checks_passed=all(bool(v) for v in self.artifact_checks.values()))
+            artifact_checks_passed=all(bool(v) for v in self.artifact_checks.values()),
+            active_comparison_required=bool(getattr(self, "is_platform_run", False)))
         self.gate_report["mlflow_run_id"] = self.mlflow_run_id
         self.gate_report["metaflow_run_id"] = self.flow_run_id
         self.gate_report["fixture"] = bool(self.fixture)
+        self.gate_report["platform_scope"] = getattr(self, "platform_scope", None)
+        self.gate_report["platform_snapshot_sha256"] = (
+            getattr(self, "platform_snapshot_sha256", None)
+            if getattr(self, "is_platform_run", False) else None)
         report_path = _json(Path(self.report_root) / "gate_report.json", self.gate_report)
         mlflow.set_tracking_uri(self.tracking_uri)
         mlflow.start_run(run_id=self.mlflow_run_id)
@@ -443,6 +628,9 @@ class PlagiarismTrainingFlow(FlowSpec):
             mlflow.set_tag("release_gate", self.gate_report["decision"])
             mlflow.log_dict(self.gate_report, "gate_report.json")
             mlflow.log_artifact(str(report_path))
+            if self.active_model_details:
+                mlflow.set_tags({"active.model_name": self.active_model_details["model_name"],
+                                 "active.model_version": self.active_model_details["model_version"]})
             mlflow.log_metric("release_gate_passed", int(self.gate_report["passed"]))
             mlflow.log_metric("validation_cached_batch_scoring_seconds",
                               float(self.validation_cached_batch_seconds))
@@ -460,6 +648,11 @@ class PlagiarismTrainingFlow(FlowSpec):
                         value = metrics.get(key)
                         if isinstance(value, (int, float)) and value is not None:
                             mlflow.log_metric(f"validation_{method}_{key}", float(value))
+            if self.active_deployed_metrics:
+                for key in ("precision", "recall", "false_alerts", "false_alerts_per_100_submissions"):
+                    value = self.active_deployed_metrics.get(key)
+                    if isinstance(value, (int, float)) and value is not None:
+                        mlflow.log_metric(f"validation_active_deployed_{key}", float(value))
         finally:
             mlflow.end_run(status="RUNNING")
         self.next(self.register)
@@ -468,16 +661,18 @@ class PlagiarismTrainingFlow(FlowSpec):
     @step
     def register(self):
         mlflow.set_tracking_uri(self.tracking_uri)
+        registry_model_name = getattr(self, "candidate_model_name", self.config["model_name"])
+        is_platform_run = bool(getattr(self, "is_platform_run", False))
         self.registered_version = None
         if self.gate_report["passed"]:
             client = MlflowClient(tracking_uri=self.tracking_uri)
-            version = mlflow.register_model(self.logged_model_uri, self.config["model_name"], await_registration_for=0)
+            version = mlflow.register_model(self.logged_model_uri, registry_model_name, await_registration_for=0)
             self.registered_version = str(version.version)
             index_rel = "plagiarism_bundle/source_index.npz"
             bundle = {
-                "bundle_version": "1.0", "model_name": self.config["model_name"],
+                "bundle_version": "1.0", "model_name": registry_model_name,
                 "model_version": self.registered_version,
-                "model_uri": f"models:/{self.config['model_name']}/{self.registered_version}",
+                "model_uri": f"models:/{registry_model_name}/{self.registered_version}",
                 "mlflow_run_id": self.mlflow_run_id, "metaflow_run_id": self.flow_run_id,
                 "threshold": self.threshold, "target_version": self.config["target"]["version"],
                 "target_description": self.config["target"]["description"],
@@ -491,7 +686,8 @@ class PlagiarismTrainingFlow(FlowSpec):
                             "training_corpus_sha256": self.input_manifest_sha256,
                             "source_lineage": self.source_lineage,
                             "encoder_revision": self.encoder_revision,
-                            "fixture": bool(self.fixture)},
+                            "fixture": bool(self.fixture),
+                            **({"platform_scope": self.platform_scope} if is_platform_run else {})},
                 "source_manifest_hash": self.source_manifest_hash,
                 "source_manifest_artifact": "plagiarism_bundle/source_manifest.json",
                 "source_cache_artifact": index_rel,
@@ -513,7 +709,12 @@ class PlagiarismTrainingFlow(FlowSpec):
             for tag, value in (("gate_passed", "true"), ("target_version", bundle["target_version"]),
                                ("feature_schema_version", bundle["feature_schema_version"]),
                                ("bundle_artifact", "deployment_bundle.json")):
-                client.set_model_version_tag(self.config["model_name"], self.registered_version, tag, str(value))
+                client.set_model_version_tag(registry_model_name, self.registered_version, tag, str(value))
+            if is_platform_run:
+                client.set_model_version_tag(registry_model_name, self.registered_version,
+                                             "platform.scope_sha256", hashlib.sha256(
+                                                 json.dumps(self.platform_scope, sort_keys=True,
+                                                            separators=(",", ":")).encode("utf-8")).hexdigest())
             self.bundle = bundle
         else:
             self.bundle = None
@@ -526,7 +727,10 @@ class PlagiarismTrainingFlow(FlowSpec):
                    "candidate_version": self.registered_version, "mlflow_run_id": self.mlflow_run_id,
                    "metaflow_run_id": self.flow_run_id, "gate_decision": self.gate_report["decision"],
                    "threshold_selection_error": self.threshold_selection_error,
-                   "report_dir": self.report_root}
+                   "report_dir": self.report_root,
+                   "active_model_comparison": self.candidate_metrics.get("active_model_comparison"),
+                   "platform_scope": self.platform_scope,
+                   "platform_snapshot_sha256": self.verified_platform_snapshot_sha256 if self.is_platform_run else None}
         if self.result_path:
             _json(Path(self.result_path), summary)
         client = MlflowClient(tracking_uri=self.tracking_uri)

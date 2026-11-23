@@ -192,8 +192,20 @@ def choose_shared_recall_thresholds(annotations: Iterable[Any],
     return shared, result
 
 
+def evaluate_at_threshold(candidates: Sequence[dict[str, Any]], probabilities: Sequence[float],
+                          threshold: float, annotations: Iterable[Any], *,
+                          eligible_submissions: Iterable[str],
+                          min_span_coverage: float = 0.5) -> dict[str, Any]:
+    """Evaluate one frozen operating threshold without retuning it on validation."""
+    metrics = merge_alerts(candidates, probabilities, threshold, annotations,
+                           eligible_submissions=eligible_submissions,
+                           min_span_coverage=min_span_coverage)
+    return {"threshold": float(threshold), **{key: value for key, value in metrics.items() if key != "alerts"}}
+
+
 def evaluate_release_gate(candidate: dict[str, Any], settings: dict[str, Any], *,
-                          data_checks_passed: bool, artifact_checks_passed: bool) -> dict[str, Any]:
+                          data_checks_passed: bool, artifact_checks_passed: bool,
+                          active_comparison_required: bool = False) -> dict[str, Any]:
     """Release gate requiring validation thresholds and strict alert reduction."""
     gates = settings["gates"]
     minimum_false_alert_reduction = gates.get("minimum_false_alert_reduction", 1)
@@ -221,7 +233,26 @@ def evaluate_release_gate(candidate: dict[str, Any], settings: dict[str, Any], *
         None if base_fa is None else base_fa - minimum_false_alert_reduction,
         model_fa is not None and base_fa is not None
         and model_fa <= base_fa - minimum_false_alert_reduction)
+    active = candidate.get("active_model_comparison")
+    active_error = active.get("error") if isinstance(active, dict) else None
+    if active_comparison_required or active is not None:
+        active_metrics = active.get("shared_recall") if isinstance(active, dict) else None
+        active_recall = active_metrics.get("recall") if isinstance(active_metrics, dict) else None
+        active_false_alerts = active_metrics.get("false_alerts") if isinstance(active_metrics, dict) else None
+        comparison_available = active_metrics is not None and active_error is None
+        add("active_comparison_available", comparison_available, "is", True,
+            comparison_available)
+        add("active_recall_preservation", recall, ">= active - tolerance",
+            None if active_recall is None else active_recall - tolerance,
+            recall is not None and active_recall is not None and recall >= active_recall - tolerance)
+        add("active_false_alert_improvement", model_fa,
+            f"<= active - {minimum_false_alert_reduction}",
+            None if active_false_alerts is None else active_false_alerts - minimum_false_alert_reduction,
+            model_fa is not None and active_false_alerts is not None
+            and model_fa <= active_false_alerts - minimum_false_alert_reduction)
     passed = all(x["passed"] for x in checks)
     return {"report_version": "1.0", "decision": "passed" if passed else "failed",
             "passed": passed, "candidate": candidate, "settings": gates, "checks": checks,
-            "champion_comparison": None}
+            "champion_comparison": None,
+            "active_model_comparison": active,
+            "active_comparison_error": active_error}

@@ -448,9 +448,10 @@ def save_corpus(corpus: Corpus, path: str | Path) -> None:
     output.write_text(json.dumps(corpus_to_dict(corpus), indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="")
 
 
-def load_corpus(path: str | Path, *, include_splits: Iterable[str] | None = None) -> Corpus:
+def _load_corpus_payload(payload: bytes, *, source: str,
+                         include_splits: Iterable[str] | None = None) -> Corpus:
     try:
-        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+        raw = json.loads(payload)
         if raw.get("schema_version") != 1:
             raise DataContractError("unsupported corpus schema version")
         documents = {row["id"]: Document(**row) for row in raw["documents"]}
@@ -458,12 +459,28 @@ def load_corpus(path: str | Path, *, include_splits: Iterable[str] | None = None
         pairs = tuple(Pair(**row) for row in raw["pairs"])
         splits = {key: tuple(value) for key, value in raw.get("splits", {}).items()}
         corpus = Corpus(documents, annotations, pairs, splits, raw.get("lineage", {}))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
-        raise DataContractError(f"cannot read corpus manifest {path}: {exc}") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise DataContractError(f"cannot read corpus manifest {source}: {exc}") from exc
     validate_corpus(corpus)
     if include_splits is None:
         return corpus
     return filter_corpus(corpus, include_splits=include_splits)
+
+
+def load_corpus_bytes(payload: bytes, *, source: str = "<verified-bytes>",
+                      include_splits: Iterable[str] | None = None) -> Corpus:
+    """Load and validate a corpus from the exact manifest bytes already verified by a caller."""
+    if not isinstance(payload, bytes):
+        raise TypeError("corpus manifest payload must be bytes")
+    return _load_corpus_payload(payload, source=source, include_splits=include_splits)
+
+
+def load_corpus(path: str | Path, *, include_splits: Iterable[str] | None = None) -> Corpus:
+    try:
+        payload = Path(path).read_bytes()
+    except OSError as exc:
+        raise DataContractError(f"cannot read corpus manifest {path}: {exc}") from exc
+    return _load_corpus_payload(payload, source=str(path), include_splits=include_splits)
 
 
 def filter_corpus(corpus: Corpus, *, include_splits: Iterable[str]) -> Corpus:

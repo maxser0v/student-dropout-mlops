@@ -70,14 +70,50 @@ def load_verified_release(
     model_loader: Any | None = None,
     registry_loader: Any | None = None,
 ) -> tuple[Any, dict[str, Any], FeaturePipeline, list[Any], Any, Any]:
-    """Resolve one version, validate its gate/artifacts, and load scoring assets.
+    """Resolve and verify a concrete release, including its frozen source index."""
+    model, bundle, feature_pipeline, encoder = load_verified_model(
+        client, model_name, version, fixture=fixture, encoder_dir=encoder_dir,
+        downloader=downloader, model_loader=model_loader, registry_loader=registry_loader,
+    )
+    run_id = str(bundle["mlflow_run_id"])
+    index_artifact = _safe_artifact_path(bundle.get("source_cache_artifact"), "source_cache_artifact")
+    manifest_artifact = _safe_artifact_path(bundle.get("source_manifest_artifact"), "source_manifest_artifact")
+    index_path = _download_run_artifact(run_id, index_artifact, downloader=downloader)
+    manifest_path = _download_run_artifact(run_id, manifest_artifact, downloader=downloader)
+    _verify_sha(index_path, bundle.get("source_index_sha256"), "source index")
+    source_manifest_hash = bundle.get("source_manifest_hash")
+    if not isinstance(source_manifest_hash, str) or len(source_manifest_hash) != 64:
+        raise ValueError("deployment bundle has no source manifest SHA-256")
+    if _sha256(manifest_path) != source_manifest_hash:
+        raise ValueError("frozen source manifest artifact checksum does not match deployment bundle")
+    if source_manifest_path is not None and _sha256(source_manifest_path) != source_manifest_hash:
+        raise ValueError("local source manifest checksum does not match deployment bundle")
+    source_chunks, source_vectors = load_source_cache(
+        index_path, source_manifest_hash=source_manifest_hash,
+        encoder_revision=bundle["encoder_revision"], config=bundle["chunking_config"],
+    )
+    if not source_chunks:
+        raise ValueError("verified source index contains no chunks")
+    return model, bundle, feature_pipeline, source_chunks, source_vectors, encoder
 
-    The return tuple is `(model, bundle, feature_pipeline, source_chunks,
-    source_vectors, encoder)`. Alias resolution belongs to the caller and is
-    intentionally not performed here.
+def load_verified_model(
+    client: Any,
+    model_name: str,
+    version: str,
+    *,
+    fixture: bool = False,
+    encoder_dir: str | Path = "/app/models/minilm",
+    downloader: Any | None = None,
+    model_loader: Any | None = None,
+    registry_loader: Any | None = None,
+) -> tuple[Any, dict[str, Any], FeaturePipeline, Any]:
+    """Load a verified registry model without binding scoring to its frozen index.
+
+    Platform assignment indexes are versioned separately. This loader retains
+    the release gate, fitted feature, chunking, and encoder provenance checks.
     """
     if not version.isdecimal() or int(version) < 1:
-        raise ValueError("release loading requires one positive concrete version")
+        raise ValueError("model loading requires one positive concrete version")
     if fixture != (model_name == FIXTURE_MODEL_NAME):
         raise ValueError("fixture releases require --fixture and the passage-reuse-fixture registry namespace")
     if registry_loader is None:
@@ -86,14 +122,9 @@ def load_verified_release(
         registry_loader = version_bundle
     registered, bundle = registry_loader(client, model_name, version)
     checks = {
-        "bundle_version": "1.0",
-        "model_version": str(version),
-        "model_name": model_name,
-        "model_uri": f"models:/{model_name}/{version}",
-        "mlflow_run_id": str(registered.run_id),
-        "gate_passed": True,
-        "target_version": TARGET_VERSION,
-        "feature_schema_version": "1.0",
+        "bundle_version": "1.0", "model_version": str(version), "model_name": model_name,
+        "model_uri": f"models:/{model_name}/{version}", "mlflow_run_id": str(registered.run_id),
+        "gate_passed": True, "target_version": TARGET_VERSION, "feature_schema_version": "1.0",
     }
     for field, expected in checks.items():
         if bundle.get(field) != expected:
@@ -103,7 +134,8 @@ def load_verified_release(
     if tuple(bundle.get("feature_columns", ())) != FEATURE_NAMES:
         raise ValueError("deployment bundle feature order does not match the scorer schema")
     threshold = bundle.get("threshold")
-    if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not math.isfinite(float(threshold)) or not 0 <= float(threshold) <= 1:
+    if (isinstance(threshold, bool) or not isinstance(threshold, (int, float))
+            or not math.isfinite(float(threshold)) or not 0 <= float(threshold) <= 1):
         raise ValueError("deployment bundle threshold must be finite and in [0, 1]")
 
     run_id = str(registered.run_id)
@@ -123,34 +155,20 @@ def load_verified_release(
     if isinstance(choice, dict) and choice.get("threshold") != approved_threshold:
         raise ValueError("gate threshold choice does not match its approved threshold")
 
-    index_artifact = _safe_artifact_path(bundle.get("source_cache_artifact"), "source_cache_artifact")
     features_artifact = _safe_artifact_path(bundle.get("features_artifact"), "features_artifact")
     chunking_artifact = _safe_artifact_path(bundle.get("chunking_artifact"), "chunking_artifact")
     encoder_artifact = _safe_artifact_path(bundle.get("encoder_manifest_artifact"), "encoder_manifest_artifact")
-    index_path = _download_run_artifact(run_id, index_artifact, downloader=downloader)
     feature_path = _download_run_artifact(run_id, features_artifact, downloader=downloader)
     chunking_path = _download_run_artifact(run_id, chunking_artifact, downloader=downloader)
     encoder_manifest_path = _download_run_artifact(run_id, encoder_artifact, downloader=downloader)
-    _verify_sha(index_path, bundle.get("source_index_sha256"), "source index")
     _verify_sha(feature_path, bundle.get("features_sha256"), "fitted feature pipeline")
     _verify_sha(chunking_path, bundle.get("chunking_sha256"), "chunking configuration")
     _verify_sha(encoder_manifest_path, bundle.get("encoder_manifest_sha256"), "encoder manifest")
-
     chunking = json.loads(chunking_path.read_text(encoding="utf-8"))
     expected_chunking = bundle.get("chunking_config")
     if not isinstance(expected_chunking, dict) or chunking != expected_chunking:
         raise ValueError("chunking artifact does not match deployment bundle")
-    source_manifest_hash = bundle.get("source_manifest_hash")
-    manifest_artifact = _safe_artifact_path(bundle.get("source_manifest_artifact"), "source_manifest_artifact")
-    manifest_path = _download_run_artifact(run_id, manifest_artifact, downloader=downloader)
-    if _sha256(manifest_path) != source_manifest_hash:
-        raise ValueError("frozen source manifest artifact checksum does not match deployment bundle")
-    if source_manifest_path is not None and _sha256(source_manifest_path) != source_manifest_hash:
-        raise ValueError("local source manifest checksum does not match deployment bundle")
-    if not isinstance(source_manifest_hash, str) or len(source_manifest_hash) != 64:
-        raise ValueError("deployment bundle has no source manifest SHA-256")
     encoder_manifest = json.loads(encoder_manifest_path.read_text(encoding="utf-8"))
-
     encoder_revision = bundle.get("encoder_revision")
     if fixture:
         encoder = FixtureEncoder()
@@ -174,19 +192,9 @@ def load_verified_release(
             isinstance(provenance, dict) and provenance.get("manifest_sha256") == manifest_fingerprint
         ):
             raise ValueError("staged encoder manifest does not match the frozen deployment bundle")
-
-    source_chunks, source_vectors = load_source_cache(
-        index_path,
-        source_manifest_hash=source_manifest_hash,
-        encoder_revision=encoder_revision,
-        config=expected_chunking,
-    )
-    if not source_chunks:
-        raise ValueError("verified source index contains no chunks")
     feature_pipeline = FeaturePipeline.load(feature_path)
     if tuple(bundle.get("feature_columns", ())) != tuple(getattr(feature_pipeline, "feature_names", ()) or FEATURE_NAMES):
         raise ValueError("fitted preprocessing feature schema does not match deployment bundle")
-
     if model_loader is None:
         model_loader = load_logged_classifier
     model = model_loader(bundle["model_uri"])
@@ -194,7 +202,7 @@ def load_verified_release(
         raise ValueError("registered XGBoost model does not provide predict_proba")
     if 1 not in list(getattr(model, "classes_", [])):
         raise ValueError("registered model does not expose positive class 1")
-    return model, bundle, feature_pipeline, source_chunks, source_vectors, encoder
+    return model, bundle, feature_pipeline, encoder
 
 
 def parse_submissions(lines: Iterable[str]) -> list[dict[str, str]]:

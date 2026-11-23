@@ -123,7 +123,11 @@ jobs:
             "$GITHUB_WORKSPACE/tests/test_plagiarism_data.py" \
             "$GITHUB_WORKSPACE/tests/test_plagiarism_score.py" \
             "$GITHUB_WORKSPACE/tests/test_plagiarism_workflow_contract.py" \
-            "$GITHUB_WORKSPACE/tests/test_plagiarism_workflow_eval.py"
+            "$GITHUB_WORKSPACE/tests/test_plagiarism_workflow_eval.py" \
+            "$GITHUB_WORKSPACE/tests/test_plagiarism_platform_corpus.py" \
+            "$GITHUB_WORKSPACE/tests/test_plagiarism_platform_scoring.py" \
+            "$GITHUB_WORKSPACE/tests/test_plagiarism_platform_training.py" \
+            "$GITHUB_WORKSPACE/tests/test_plagiarism_platform_worker.py"
           uv run --directory plagiarism-runtime python "$GITHUB_WORKSPACE/scripts/plagiarism_fixture_workflow.py" \
             --tracking-uri sqlite:////tmp/plagiarism-fixture-ci.db \
             --output-dir /tmp/plagiarism-fixture-ci
