@@ -1,0 +1,24 @@
+{
+  "reports": [
+    {
+      "report_id": "report-copy-source",
+      "text": "Water conservation in dry regions depends on repairing distribution leaks, measuring household demand, and adapting irrigation schedules to local soil conditions. Public agencies can compare seasonal measurements to identify where conservation programs are useful. A library digitization project should preserve source metadata, use redundant storage, and schedule checksum audits. Curators can then track file migrations without confusing a preservation copy with a public access copy.",
+      "version_id": "v1"
+    },
+    {
+      "report_id": "report-copy-submission",
+      "text": "Field notes: Water conservation in dry regions depends on repairing distribution leaks, measuring household demand, and adapting irrigation schedules to local soil conditions. Public agencies can compare seasonal measurements to identify where conservation programs are useful.",
+      "version_id": "v1"
+    },
+    {
+      "report_id": "report-independent",
+      "text": "Independent notes: A field survey of coastal bird migration records wind, tide, and nesting observations for each route. Researchers can compare seasonal arrival patterns across protected wetlands.",
+      "version_id": "v1"
+    }
+  ],
+  "scope": {
+    "assignment_id": "fixture-assignment",
+    "course_id": "fixture-course",
+    "institution_id": "fixture-university"
+  }
+}

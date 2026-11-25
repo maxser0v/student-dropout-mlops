@@ -1,0 +1,48 @@
+{
+  "cohorts": [
+    "2024_S1",
+    "2024_S2",
+    "2025_S1"
+  ],
+  "coverage_limitations": [
+    "Fictional learner activity and outcomes; training fixture only."
+  ],
+  "export_id": "fixture-dropout-903",
+  "exported_at": "2026-11-25T00:00:00Z",
+  "extraction_version": "generate_worker_fixtures.py:1",
+  "files": {
+    "raw/lms_snapshots.csv": {
+      "sha256": "3bcd2c79874ef5f21d6d2b6903e944c30469d86b6e1d2a016d17790b72535d7a"
+    },
+    "raw/student_outcomes.csv": {
+      "sha256": "5219e5fd7c49cf8de8b378b01a0ef407221c7acb619a63f96bf502287e449180"
+    }
+  },
+  "fixture_only": true,
+  "included_event_categories": [
+    "course_view",
+    "forum_post"
+  ],
+  "platform_scope": {
+    "tenant_id": "fixture-tenant"
+  },
+  "provenance": "synthetic_platform_fixture",
+  "row_counts": {
+    "lms_snapshots": 120,
+    "student_outcomes": 120
+  },
+  "schema_version": "1.0",
+  "split": {
+    "test": [
+      "2025_S1"
+    ],
+    "train": [
+      "2024_S1"
+    ],
+    "validation": [
+      "2024_S2"
+    ]
+  },
+  "synthetic": true,
+  "timezone": "UTC"
+}
