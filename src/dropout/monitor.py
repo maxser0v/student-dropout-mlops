@@ -74,7 +74,7 @@ def _feature_bin_spec(values: np.ndarray, feature_name: str) -> dict[str, Any]:
     return {
         "method": method,
         **details,
-        "valid_reference_count": int(len(finite)),
+        "valid_reference_count": len(finite),
         "missing_reference_count": int(len(values) - len(finite)),
         "missing_reference_rate": float((len(values) - len(finite)) / len(values)),
         "bin_counts": counts.tolist(),
@@ -92,6 +92,8 @@ def create_reference_profile(
     target_version: str,
     feature_schema_version: str,
     train_cohorts: tuple[str, ...] = TRAIN_COHORTS,
+    platform_scope: dict[str, Any] | None = None,
+    platform_export_id: str | None = None,
     epsilon: float = DEFAULT_EPSILON,
 ) -> dict[str, Any]:
     """Build fixed bins/proportions from the TRAIN feature matrix only."""
@@ -115,7 +117,9 @@ def create_reference_profile(
         "feature_schema_version": feature_schema_version,
         "feature_columns": list(FEATURE_COLUMNS),
         "train_cohorts": list(train_cohorts),
-        "train_rows": int(len(features)),
+        "platform_scope": platform_scope,
+        "platform_export_id": platform_export_id,
+        "train_rows": len(features),
         "psi_epsilon": float(epsilon),
         "psi_alert_threshold": DEFAULT_PSI_ALERT,
         "minimum_batch_rows": DEFAULT_MINIMUM_ROWS,
@@ -138,19 +142,47 @@ def profile_from_snapshot_export(data_dir: str | Path, bundle: dict[str, Any]) -
     lineage = bundle.get("lineage") or {}
     if manifest_hash != lineage.get("data_manifest_sha256"):
         raise ValueError("reference data manifest does not match the model's recorded training manifest")
-    relative_snapshot = f"{root.name}/raw/lms_snapshots.csv"
-    expected_file = (manifest.get("files") or {}).get(relative_snapshot, {}).get("sha256")
+    if manifest.get("platform_scope") is not None and manifest.get("platform_scope") != lineage.get("platform_scope"):
+        raise ValueError("reference manifest scope does not match the model's training scope")
+    if manifest.get("platform_scope") is not None and not isinstance(lineage.get("platform_scope"), dict):
+        raise ValueError("scoped monitoring profile requires a scoped model bundle")
+    if manifest.get("export_id") is not None and manifest.get("export_id") != lineage.get("platform_export_id"):
+        raise ValueError("reference manifest export ID does not match the model's training lineage")
+    files = manifest.get("files") or {}
+    relative_snapshot = next(
+        (name for name in ("raw/lms_snapshots.csv", "data/raw/lms_snapshots.csv") if name in files),
+        None,
+    )
+    if relative_snapshot is None:
+        raise DataContractError("reference manifest does not declare the LMS snapshot export")
+    expected_file = files[relative_snapshot].get("sha256")
     if _sha256_bytes(snapshot_bytes) != expected_file:
         raise DataContractError("reference snapshot checksum does not match its manifest")
-    declared_train = tuple((manifest.get("split") or {}).get("train", ()))
-    if declared_train != TRAIN_COHORTS:
-        raise DataContractError("reference manifest train cohorts do not match the fixed temporal split")
+    split = manifest.get("split") or {}
+    declared_train = tuple(split.get("train", ()))
+    declared_all = [*declared_train, *split.get("validation", ()), *split.get("test", ())]
+    cohort_manifest = manifest.get("cohorts") or []
+    if isinstance(cohort_manifest, dict):
+        chronological_cohorts = list(cohort_manifest)
+    elif isinstance(cohort_manifest, list):
+        chronological_cohorts = cohort_manifest
+    else:
+        chronological_cohorts = []
+    if (
+        not declared_train
+        or len(set(declared_all)) != len(declared_all)
+        or set(declared_all) != set(chronological_cohorts)
+    ):
+        raise DataContractError("reference manifest must declare a complete, disjoint chronological split")
+    positions = [chronological_cohorts.index(cohort) for cohort in declared_all]
+    if positions != sorted(positions):
+        raise DataContractError("reference manifest train cohorts are not chronological")
     snapshots = pd.read_csv(snapshot_path, dtype=str, keep_default_na=False)
     validate_snapshot_frame(snapshots)
-    train_rows = snapshots.loc[snapshots["cohort_id"].astype(str).isin(TRAIN_COHORTS)].reset_index(drop=True)
+    train_rows = snapshots.loc[snapshots["cohort_id"].astype(str).isin(declared_train)].reset_index(drop=True)
     if train_rows.empty:
         raise DataContractError("reference export contains no rows from the fixed TRAIN cohorts")
-    if set(snapshots["cohort_id"].astype(str)) - set((*TRAIN_COHORTS, "2025_S1", "2025_S2")):
+    if set(snapshots["cohort_id"].astype(str)) - set(declared_all):
         raise DataContractError("reference export contains a cohort outside the documented temporal split")
     features = make_features(train_rows, validate=False)
     return create_reference_profile(
@@ -161,7 +193,9 @@ def profile_from_snapshot_export(data_dir: str | Path, bundle: dict[str, Any]) -
         data_manifest_sha256=manifest_hash,
         target_version=str(bundle["target_version"]),
         feature_schema_version=str(bundle["feature_schema_version"]),
-        train_cohorts=TRAIN_COHORTS,
+        train_cohorts=declared_train,
+        platform_scope=(bundle.get("lineage") or {}).get("platform_scope"),
+        platform_export_id=(bundle.get("lineage") or {}).get("platform_export_id"),
     )
 
 
@@ -176,7 +210,12 @@ def _validated_profile(profile: dict[str, Any], bundle: dict[str, Any], expected
         "target_version": bundle.get("target_version"),
         "feature_schema_version": bundle.get("feature_schema_version"),
         "feature_columns": list(bundle.get("feature_columns", ())),
+        "platform_scope": (bundle.get("lineage") or {}).get("platform_scope"),
+        "platform_export_id": (bundle.get("lineage") or {}).get("platform_export_id"),
     }
+    lineage_split = (bundle.get("lineage") or {}).get("split") or {}
+    if lineage_split.get("train") is not None:
+        expected["train_cohorts"] = list(lineage_split["train"])
     for key, value in expected.items():
         if profile.get(key) != value:
             raise ValueError(f"monitoring profile {key} does not match the verified model bundle")
@@ -254,8 +293,8 @@ def _feature_distribution(values: np.ndarray, feature_name: str, profile: dict[s
     finite = values[finite_mask]
     missing = int((~finite_mask).sum())
     result: dict[str, Any] = {
-        "rows": int(len(values)),
-        "valid_count": int(len(finite)),
+        "rows": len(values),
+        "valid_count": len(finite),
         "missing_count": missing,
         "missing_rate": float(missing / len(values)) if len(values) else None,
         "mean": float(finite.mean()) if len(finite) else None,
@@ -282,7 +321,7 @@ def _outcome_metrics(
     bundle: dict[str, Any],
 ) -> dict[str, Any]:
     if outcomes is None:
-        return {"status": "data_not_ready", "reason": "no matured outcomes were supplied", "support": 0, "pending_count": int(len(snapshots)), "simulated": None}
+        return {"status": "data_not_ready", "reason": "no matured outcomes were supplied", "support": 0, "pending_count": len(snapshots), "simulated": None}
     _validate_outcome_frame(outcomes)
     input_keys = set(map(tuple, snapshots.loc[:, KEY_COLUMNS].astype(str).to_numpy()))
     outcome_keys = set(map(tuple, outcomes.loc[:, KEY_COLUMNS].astype(str).to_numpy()))
@@ -334,7 +373,7 @@ def _outcome_metrics(
     predicted_positive = int(predicted.sum())
     return {
         "status": "reported",
-        "support": int(len(y)),
+        "support": len(y),
         "positive_support": positive_support,
         "pending_count": pending,
         "precision": float(precision_score(y, predicted, zero_division=0)) if predicted_positive else 0.0,
@@ -379,7 +418,7 @@ def monitor_frame(
             finite = values[np.isfinite(values)]
             missing = int((~np.isfinite(values)).sum())
             feature_reports[name] = {
-                "rows": int(len(values)), "valid_count": int(len(finite)), "missing_count": missing,
+                "rows": len(values), "valid_count": len(finite), "missing_count": missing,
                 "missing_rate": float(missing / len(values)) if len(values) else None,
                 "mean": float(finite.mean()) if len(finite) else None,
                 "minimum": float(finite.min()) if len(finite) else None,
@@ -422,8 +461,8 @@ def monitor_frame(
         "target_version": bundle["target_version"],
         "feature_schema_version": bundle["feature_schema_version"],
         "training_data_manifest_sha256": manifest,
-        "row_count": int(len(snapshots)),
-        "valid_row_count": int(len(snapshots)),
+        "row_count": len(snapshots),
+        "valid_row_count": len(snapshots),
         "rejected_row_count": 0,
         "drift_status": drift_status,
         "drift_alert": alert,
@@ -472,6 +511,12 @@ def create_and_register_reference_profile(
     profile = profile_from_snapshot_export(data_dir, bundle)
     payload = _json_bytes(profile)
     digest = _sha256_bytes(payload)
+    local_path = Path(output_path).expanduser().resolve()
+    expected_artifact = _profile_artifact_path(str(model_version))
+    if local_path.name != Path(expected_artifact).name:
+        raise ValueError("monitoring profile output filename must match the immutable versioned artifact path")
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    local_path.write_bytes(payload)
     registered = client.get_model_version(model_name, str(model_version))
     tags = registered.tags or {}
     existing_digest = tags.get(PROFILE_TAG)
@@ -483,9 +528,6 @@ def create_and_register_reference_profile(
         if _sha256_bytes(Path(remote).read_bytes()) != digest:
             raise ValueError("existing reference profile artifact does not match its checksum tag")
         return {"status": "already_registered", "sha256": digest, "artifact": artifact_path, "model_version": str(model_version)}
-    local_path = Path(output_path).expanduser().resolve()
-    local_path.parent.mkdir(parents=True, exist_ok=True)
-    local_path.write_bytes(payload)
     client.log_artifact(str(registered.run_id), str(local_path), artifact_path="monitoring")
     client.set_model_version_tag(model_name, str(model_version), PROFILE_TAG, digest)
     return {"status": "registered", "sha256": digest, "artifact": _profile_artifact_path(str(model_version)), "model_version": str(model_version), "mlflow_run_id": str(registered.run_id)}

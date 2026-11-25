@@ -253,7 +253,12 @@ def _validate_outcome_frame(frame: pd.DataFrame) -> None:
         raise DataContractError("\n".join(errors))
 
 
-def load_training_data(data_dir: str | Path) -> TrainingData:
+def load_training_data(
+    data_dir: str | Path,
+    *, train_cohorts: tuple[str, ...] = TRAIN_COHORTS,
+    validation_cohorts: tuple[str, ...] = VALIDATION_COHORTS,
+    test_cohorts: tuple[str, ...] = TEST_COHORTS,
+) -> TrainingData:
     """Load, validate, join and cohort-split the two historical CSV exports.
 
     Unknown and immature completed/failed outcomes are excluded and counted.
@@ -308,12 +313,12 @@ def load_training_data(data_dir: str | Path) -> TrainingData:
     supervised["dropout_label"] = supervised["dropout_label"].astype("int64")
     cohorts = supervised["cohort_id"]
     cohort_groups = {
-        "train": cohorts.isin(TRAIN_COHORTS),
-        "validation": cohorts.isin(VALIDATION_COHORTS),
-        "test": cohorts.isin(TEST_COHORTS),
+        "train": cohorts.isin(train_cohorts),
+        "validation": cohorts.isin(validation_cohorts),
+        "test": cohorts.isin(test_cohorts),
     }
     split_counts = {name: int(mask.sum()) for name, mask in cohort_groups.items()}
-    if set(supervised["cohort_id"]) - set((*TRAIN_COHORTS, *VALIDATION_COHORTS, *TEST_COHORTS)):
+    if set(supervised["cohort_id"]) - set((*train_cohorts, *validation_cohorts, *test_cohorts)):
         raise DataContractError("dataset contains cohort IDs absent from the documented temporal split")
     train_students = set(supervised.loc[cohort_groups["train"], "student_key"])
     validation_students = set(supervised.loc[cohort_groups["validation"], "student_key"])
@@ -332,20 +337,52 @@ def load_training_data(data_dir: str | Path) -> TrainingData:
     )
 
 
-def verify_manifest(data_dir: str | Path) -> dict[str, object]:
-    """Verify the starter manifest's SHA-256 values and row counts."""
+def verify_manifest(
+    data_dir: str | Path,
+    *, mode: str = "synthetic", expected_scope: dict[str, str] | None = None,
+) -> dict[str, object]:
+    """Verify a synthetic demo manifest or a scoped immutable platform export."""
     root = Path(data_dir)
     try:
         manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise DataContractError(f"cannot read data manifest: {exc}") from exc
-    if not manifest.get("synthetic"):
+    if mode not in {"synthetic", "platform", "platform-fixture"}:
+        raise DataContractError("unsupported training data mode")
+    if mode == "synthetic" and manifest.get("synthetic") is not True:
         raise DataContractError("expected a synthetic manifest for this local demonstration")
+    if mode == "platform-fixture":
+        if manifest.get("synthetic") is not True or manifest.get("provenance") != "synthetic_platform_fixture" or manifest.get("fixture_only") is not True:
+            raise DataContractError("platform-fixture mode requires an explicitly synthetic fixture manifest")
+        if expected_scope is None or manifest.get("platform_scope") != expected_scope:
+            raise DataContractError("synthetic fixture scope does not match the requested model scope")
+    if mode in {"platform", "platform-fixture"}:
+        is_fixture = mode == "platform-fixture"
+        expected_provenance = "synthetic_platform_fixture" if is_fixture else "platform_export"
+        expected_synthetic = True if is_fixture else False
+        if manifest.get("synthetic") is not expected_synthetic or manifest.get("provenance") != expected_provenance:
+            raise DataContractError("training manifest provenance does not match the selected mode")
+        if manifest.get("schema_version") != "1.0" or not isinstance(manifest.get("export_id"), str):
+            raise DataContractError("platform manifest requires schema_version 1.0 and export_id")
+        required_metadata = ("exported_at", "timezone", "extraction_version", "included_event_categories",
+                             "coverage_limitations", "row_counts")
+        missing_metadata = [name for name in required_metadata if name not in manifest]
+        if missing_metadata:
+            raise DataContractError(f"platform manifest is missing metadata: {', '.join(missing_metadata)}")
+        if manifest["timezone"] != "UTC" or not isinstance(manifest["included_event_categories"], list):
+            raise DataContractError("platform manifest must declare UTC and included event categories")
+        if not isinstance(manifest["coverage_limitations"], list) or not isinstance(manifest["row_counts"], dict):
+            raise DataContractError("platform coverage limitations and row_counts must be arrays/mappings")
+        if not is_fixture and (expected_scope is None or manifest.get("platform_scope") != expected_scope):
+            raise DataContractError("platform manifest scope does not match the requested model scope")
     errors = []
     files = manifest.get("files", {})
-    required_training_inputs = {"data/raw/lms_snapshots.csv", "data/raw/student_outcomes.csv"}
+    required_training_inputs = ({"data/raw/lms_snapshots.csv", "data/raw/student_outcomes.csv"}
+                                if mode == "synthetic" else {"raw/lms_snapshots.csv", "raw/student_outcomes.csv"})
     if not isinstance(files, dict):
         raise DataContractError("manifest files must be a mapping of relative paths to checksums")
+    if mode in {"platform", "platform-fixture"} and set(files) != required_training_inputs:
+        raise DataContractError("platform manifest must checksum exactly the snapshot and outcome exports")
     missing_training_inputs = sorted(required_training_inputs - set(files))
     if missing_training_inputs:
         errors.append(f"manifest missing required training input checksum(s): {', '.join(missing_training_inputs)}")
@@ -363,7 +400,10 @@ def verify_manifest(data_dir: str | Path) -> dict[str, object]:
         if not isinstance(checksum, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", checksum):
             errors.append(f"manifest checksum must be 64 hexadecimal characters: {relative}")
             continue
-        path = root.parent / relative
+        if Path(relative).is_absolute() or ".." in Path(relative).parts:
+            errors.append(f"manifest file path is not a safe relative path: {relative}")
+            continue
+        path = root.parent / relative if relative.startswith("data/") else root / relative
         if not path.is_file():
             errors.append(f"manifest file missing: {relative}")
         elif hashlib.sha256(path.read_bytes()).hexdigest() != checksum.lower():
@@ -372,10 +412,47 @@ def verify_manifest(data_dir: str | Path) -> dict[str, object]:
         raise DataContractError("\n".join(errors))
     snapshots = pd.read_csv(root / "raw" / "lms_snapshots.csv", dtype=str, keep_default_na=False)
     outcomes = pd.read_csv(root / "raw" / "student_outcomes.csv", dtype=str, keep_default_na=False)
-    if len(snapshots) != len(outcomes) or len(snapshots) != sum(c["rows"] for c in manifest["cohorts"].values()):
+    if mode == "synthetic" and (len(snapshots) != len(outcomes) or len(snapshots) != sum(c["rows"] for c in manifest["cohorts"].values())):
         raise DataContractError("manifest row counts do not match the snapshot/outcome files")
     actual = snapshots["cohort_id"].value_counts().to_dict()
-    for cohort, details in manifest["cohorts"].items():
-        if actual.get(cohort, 0) != details["rows"]:
-            raise DataContractError(f"manifest cohort count mismatch for {cohort}")
+    if mode == "synthetic":
+        for cohort, details in manifest["cohorts"].items():
+            if actual.get(cohort, 0) != details["rows"]:
+                raise DataContractError(f"manifest cohort count mismatch for {cohort}")
+    else:
+        cohorts = manifest.get("cohorts")
+        if not isinstance(cohorts, list) or not cohorts or len(set(cohorts)) != len(cohorts):
+            raise DataContractError("platform manifest cohorts must be an explicit ordered list")
+        start_dates: dict[str, datetime] = {}
+        for cohort in cohorts:
+            group = snapshots.loc[snapshots["cohort_id"].astype(str) == cohort]
+            starts = set()
+            cutoffs = set()
+            for index, row in group.iterrows():
+                starts.add(_timestamp(row["course_start_at"], "course_start_at", index, []) )
+                cutoffs.add(_timestamp(row["snapshot_at"], "snapshot_at", index, []))
+            if None in starts or None in cutoffs or len(starts) != 1 or len(cutoffs) != 1:
+                raise DataContractError(f"platform cohort {cohort} has inconsistent start dates or cutoffs")
+            start_at, cutoff_at = next(iter(starts)), next(iter(cutoffs))
+            if cutoff_at - start_at != timedelta(days=35):
+                raise DataContractError(f"platform cohort {cohort} is not a day-35 snapshot")
+            start_dates[cohort] = start_at
+        if list(start_dates.values()) != sorted(start_dates.values()):
+            raise DataContractError("platform cohorts must be declared in chronological course-start order")
+        if set(snapshots["cohort_id"].astype(str)) != set(cohorts):
+            raise DataContractError("platform manifest cohorts do not match snapshot rows")
+        row_counts = manifest["row_counts"]
+        if row_counts.get("lms_snapshots") != len(snapshots) or row_counts.get("student_outcomes") != len(outcomes):
+            raise DataContractError("platform manifest row counts do not match the verified CSVs")
+        if len(snapshots) != len(outcomes):
+            raise DataContractError("platform snapshot and outcome exports must have matching row counts")
+        split = manifest.get("split")
+        if not isinstance(split, dict) or any(not isinstance(split.get(key), list) or not split[key] for key in ("train", "validation")):
+            raise DataContractError("platform manifest requires explicit train and validation cohorts")
+        declared = split["train"] + split["validation"] + split.get("test", [])
+        if len(set(declared)) != len(declared) or set(declared) != set(cohorts):
+            raise DataContractError("platform chronological cohort split must cover each cohort exactly once")
+        positions = [cohorts.index(item) for item in declared]
+        if positions != sorted(positions):
+            raise DataContractError("platform cohort split must be chronological")
     return manifest

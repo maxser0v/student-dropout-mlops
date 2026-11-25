@@ -1,0 +1,8 @@
+{
+  "files": {
+    "dropout-snapshots.csv": "263e3dcb93188397742ca71e25d992dd2dcf98dfd80c94052b1906fcf18df1d2",
+    "plagiarism-score-payload.json": "21103d4ecebd2d85954d6732af29157f9ef465350dd032b9d49220e34c082d40"
+  },
+  "fixture_only": true,
+  "seed": 903
+}

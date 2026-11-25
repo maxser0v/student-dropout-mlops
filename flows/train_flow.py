@@ -44,7 +44,7 @@ from dropout.training import (
     positive_class_probability,
     threshold_choice_dict,
 )
-from dropout.validation import FEATURE_COLUMNS, TRAIN_COHORTS, VALIDATION_COHORTS, load_training_data, verify_manifest
+from dropout.validation import FEATURE_COLUMNS, TEST_COHORTS, TRAIN_COHORTS, VALIDATION_COHORTS, load_training_data, verify_manifest
 
 
 def _json_dump(path: Path, payload: Any) -> Path:
@@ -58,21 +58,27 @@ def _result_path(path_value: str | Path | None) -> Path | None:
         return None
     path = Path(path_value)
     candidate = Path(os.path.abspath(path if path.is_absolute() else ROOT / path))
+    worker_root_value = os.environ.get("PROFASSIST_WORK_DIR")
     reports_root = Path(os.path.abspath(ROOT / "reports"))
-    if candidate == reports_root or reports_root not in candidate.parents:
+    worker_root = Path(os.path.abspath(worker_root_value)) if worker_root_value else None
+    inside_worker = worker_root is not None and candidate != worker_root and worker_root in candidate.parents
+    if not inside_worker and (candidate == reports_root or reports_root not in candidate.parents):
         raise ValueError("result-path must be a file inside the project reports/ directory")
-    if reports_root.is_symlink():
+    if reports_root.is_symlink() and not inside_worker:
         raise ValueError("result-path reports/ directory cannot be a symlink")
     cursor = candidate.parent
-    while cursor != reports_root and reports_root in cursor.parents:
+    root_boundary = worker_root if inside_worker else reports_root
+    while cursor != root_boundary and root_boundary in cursor.parents:
         if cursor.exists() and cursor.is_symlink():
             raise ValueError("result-path cannot traverse a symlink inside reports/")
         cursor = cursor.parent
     if candidate.is_symlink():
         raise ValueError("result-path cannot be a symlink")
     resolved = candidate.resolve()
-    if reports_root.resolve() not in resolved.parents:
+    if not inside_worker and reports_root.resolve() not in resolved.parents:
         raise ValueError("result-path resolves outside the project reports/ directory")
+    if inside_worker and worker_root.resolve() not in resolved.parents:
+        raise ValueError("result-path resolves outside the private worker directory")
     if candidate.exists():
         raise FileExistsError(f"result-path already exists: {candidate}")
     return candidate
@@ -282,6 +288,12 @@ class TrainFlow(FlowSpec):
     tracking_uri = Parameter("tracking-uri", default="sqlite:///reports/mlflow/mlflow.db", help="MLflow tracking and registry URI")
     experiment_name = Parameter("experiment-name", default="student-dropout", help="MLflow experiment name")
     result_path = Parameter("result-path", default=None, help="Optional machine-readable run result JSON path")
+    data_mode = Parameter("data-mode", default="synthetic", help="synthetic demo data or immutable platform export")
+    platform_scope = Parameter("platform-scope", default="{}", help="JSON scope for platform export models")
+    active_model_version = Parameter("active-model-version", default=None, help="Concrete active version for scoped candidate comparison")
+    train_cohorts_param = Parameter("train-cohorts", default="", help="Comma-separated chronological training cohorts")
+    validation_cohorts_param = Parameter("validation-cohorts", default="", help="Comma-separated validation cohorts")
+    test_cohorts_param = Parameter("test-cohorts", default="", help="Comma-separated excluded test cohorts")
 
     @_failure_guard
     @card
@@ -296,11 +308,29 @@ class TrainFlow(FlowSpec):
             relative_db = self.tracking_uri.removeprefix("sqlite:///")
             self.resolved_tracking_uri = "sqlite:///" + str((ROOT / relative_db).resolve())
         self.config, self.config_sha256 = _load_config(self.resolved_config_path)
+        if self.data_mode not in {"synthetic", "platform", "platform-fixture"}:
+            raise ValueError("data-mode must be synthetic, platform, or platform-fixture")
+        self.platform_scope_value = json.loads(self.platform_scope)
+        platform_mode = self.data_mode in {"platform", "platform-fixture"}
+        if platform_mode and (not isinstance(self.platform_scope_value, dict) or set(self.platform_scope_value) != {"tenant_id"}):
+            raise ValueError("platform-scope must be JSON with exactly tenant_id")
+        if self.data_mode == "platform-fixture" and "fixture" not in str(self.config["model_name"]).lower():
+            raise ValueError("platform-fixture mode requires an isolated registry model name containing 'fixture'")
+        if not platform_mode and self.active_model_version:
+            raise ValueError("active-model-version is available only in platform mode")
+        if platform_mode and self.active_model_version and not str(self.active_model_version).isdecimal():
+            raise ValueError("active-model-version must be a concrete positive registry version")
+        self.train_cohorts = tuple(x for x in self.train_cohorts_param.split(",") if x) or TRAIN_COHORTS
+        self.validation_cohorts = tuple(x for x in self.validation_cohorts_param.split(",") if x) or VALIDATION_COHORTS
+        self.test_cohorts = tuple(x for x in self.test_cohorts_param.split(",") if x) or TEST_COHORTS
+        all_cohorts = (*self.train_cohorts, *self.validation_cohorts, *self.test_cohorts)
+        if len(set(all_cohorts)) != len(all_cohorts) or not self.train_cohorts or not self.validation_cohorts:
+            raise ValueError("train, validation, and test cohorts must be disjoint with nonempty train and validation")
         self.seed = int(self.config["seed"])
         client = _set_tracking(self.resolved_tracking_uri)
         experiment_id = _experiment(client, self.experiment_name, self.resolved_tracking_uri)
         tags = {
-            "synthetic": "true",
+            "synthetic": str(self.data_mode != "platform").lower(),
             "metaflow.flow": str(current.flow_name),
             "metaflow.run_id": self.flow_run_id,
             "feature_schema_version": str(self.config["feature_schema"]["version"]),
@@ -308,7 +338,9 @@ class TrainFlow(FlowSpec):
         }
         run = client.create_run(experiment_id, run_name=f"dropout-{self.flow_run_id}", tags=tags)
         self.mlflow_run_id = run.info.run_id
-        self.report_dir = str((ROOT / "reports" / self.flow_run_id).resolve())
+        report_root = Path(os.environ.get("PROFASSIST_WORK_DIR", ROOT / "reports"))
+        report_parent = report_root / "reports" if os.environ.get("PROFASSIST_WORK_DIR") else report_root
+        self.report_dir = str((report_parent / self.flow_run_id).resolve())
         Path(self.report_dir).mkdir(parents=True, exist_ok=True)
         self.next(self.validate)
 
@@ -318,12 +350,22 @@ class TrainFlow(FlowSpec):
     def validate(self):
         client = _set_tracking(self.resolved_tracking_uri)
         try:
-            manifest = verify_manifest(self.resolved_data_dir)
-            training_data = load_training_data(self.resolved_data_dir)
+            platform_mode = self.data_mode in {"platform", "platform-fixture"}
+            manifest = verify_manifest(self.resolved_data_dir, mode=self.data_mode,
+                                       expected_scope=self.platform_scope_value if platform_mode else None)
+            if platform_mode:
+                manifest_split = manifest["split"]
+                if (tuple(manifest_split["train"]) != self.train_cohorts
+                        or tuple(manifest_split["validation"]) != self.validation_cohorts
+                        or tuple(manifest_split.get("test", [])) != self.test_cohorts):
+                    raise ValueError("requested cohort splits do not match the immutable export manifest")
+            training_data = load_training_data(self.resolved_data_dir, train_cohorts=self.train_cohorts,
+                                               validation_cohorts=self.validation_cohorts,
+                                               test_cohorts=self.test_cohorts)
             snapshots = training_data.snapshots
             cohorts = snapshots["cohort_id"].astype(str)
-            train_mask = cohorts.isin(TRAIN_COHORTS).to_numpy()
-            validation_mask = cohorts.isin(VALIDATION_COHORTS).to_numpy()
+            train_mask = cohorts.isin(self.train_cohorts).to_numpy()
+            validation_mask = cohorts.isin(self.validation_cohorts).to_numpy()
             if not train_mask.any() or not validation_mask.any():
                 raise ValueError("both train and validation cohorts must have mature supervised labels")
 
@@ -340,17 +382,31 @@ class TrainFlow(FlowSpec):
                 raise ValueError("features and labels are not aligned")
             self.exclusions = dict(training_data.exclusions)
             self.split_metadata = {
-                "train": {"cohorts": list(TRAIN_COHORTS), "rows": int(len(self.X_train)), "positive_count": int(self.y_train.sum())},
-                "validation": {"cohorts": list(VALIDATION_COHORTS), "rows": int(len(self.X_validation)), "positive_count": int(self.y_validation.sum())},
+                "train": {"cohorts": list(self.train_cohorts), "rows": int(len(self.X_train)), "positive_count": int(self.y_train.sum())},
+                "validation": {"cohorts": list(self.validation_cohorts), "rows": int(len(self.X_validation)), "positive_count": int(self.y_validation.sum())},
+                "test": {"cohorts": list(self.test_cohorts), "rows": int(training_data.split_counts["test"])},
                 "student_overlap": training_data.student_overlap,
                 "exclusions": self.exclusions,
             }
             self.manifest = manifest
-            self.lineage = {
-                **collect_source_lineage(ROOT),
-                **_data_lineage(Path(self.resolved_data_dir), manifest),
-            }
-            dvc_verification = self.lineage["dvc_directory_verification"]
+            if self.data_mode == "synthetic":
+                self.lineage = {**collect_source_lineage(ROOT), **_data_lineage(Path(self.resolved_data_dir), manifest)}
+            else:
+                manifest_bytes = (Path(self.resolved_data_dir) / "manifest.json").read_bytes()
+                self.lineage = {
+                    **collect_source_lineage(ROOT),
+                    "data_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+                    "data_file_sha256": {name: info["sha256"] for name, info in manifest["files"].items()},
+                    "platform_export_id": manifest["export_id"],
+                    "platform_scope": self.platform_scope_value,
+                    "platform_snapshot_sha256": manifest["files"]["raw/lms_snapshots.csv"]["sha256"],
+                    "platform_outcomes_sha256": manifest["files"]["raw/student_outcomes.csv"]["sha256"],
+                    "cohorts": list(manifest["cohorts"]),
+                    "split": {"train": list(self.train_cohorts), "validation": list(self.validation_cohorts), "test": list(self.test_cohorts)},
+                    "verified_platform_export": self.data_mode == "platform",
+                    "synthetic_fixture": self.data_mode == "platform-fixture",
+                }
+            dvc_verification = self.lineage.get("dvc_directory_verification", {"passed": True, "mode": "platform_export"})
             if not dvc_verification["passed"]:
                 lineage_path = _json_dump(Path(self.report_dir) / "lineage.json", self.lineage)
 
@@ -376,7 +432,7 @@ class TrainFlow(FlowSpec):
                     "target_version": self.config["target"]["version"],
                     "config_sha256": self.config_sha256,
                     "data_manifest_sha256": self.lineage["data_manifest_sha256"],
-                    "dvc_pointer_sha256": self.lineage["dvc_pointer_sha256"] or "unavailable",
+                    "dvc_pointer_sha256": self.lineage.get("dvc_pointer_sha256") or "unavailable",
                     "train_rows": len(self.X_train),
                     "validation_rows": len(self.X_validation),
                     "train_prevalence": round(float(self.y_train.mean()), 8),
@@ -396,8 +452,8 @@ class TrainFlow(FlowSpec):
                     "source.tree.origin": str(self.lineage["source_tree_sha256_source"]),
                     "docker.image.id": str(self.lineage["docker_image_id"] or "unavailable"),
                     "docker.image.id.source": str(self.lineage["docker_image_id_source"]),
-                    "dvc.pointer.sha256": str(self.lineage["dvc_pointer_sha256"] or "unavailable"),
-                    "dvc.directory.verified": str(self.lineage["dvc_directory_verification"]["passed"]).lower(),
+                    "dvc.pointer.sha256": str(self.lineage.get("dvc_pointer_sha256") or "unavailable"),
+                    "dvc.directory.verified": str(self.lineage.get("dvc_directory_verification", {}).get("passed", False)).lower(),
                 })
                 mlflow.log_params({
                     "git_commit": self.lineage["git_commit"] or "unavailable",
@@ -406,7 +462,7 @@ class TrainFlow(FlowSpec):
                     "source_revision_source": self.lineage["source_revision_source"],
                     "source_tree_sha256": self.lineage["source_tree_sha256"] or "unavailable",
                     "docker_image_id": self.lineage["docker_image_id"] or "unavailable",
-                    "dvc_pointer_sha256": self.lineage["dvc_pointer_sha256"] or "unavailable",
+                    "dvc_pointer_sha256": self.lineage.get("dvc_pointer_sha256") or "unavailable",
                 })
                 _json_dump(Path(self.report_dir) / "manifest.json", self.manifest)
                 _json_dump(Path(self.report_dir) / "lineage.json", self.lineage)
@@ -537,7 +593,17 @@ class TrainFlow(FlowSpec):
         client = _set_tracking(self.resolved_tracking_uri)
         champion_metadata = None
         champion_version = None
-        registered, old_bundle = _resolve_champion_bundle(client, self.config["model_name"])
+        if self.data_mode in {"platform", "platform-fixture"} and self.active_model_version:
+            registered = client.get_model_version(self.config["model_name"], str(self.active_model_version))
+            old_bundle = _download_bundle(client, registered.run_id)
+            if old_bundle.get("lineage", {}).get("platform_scope") != self.platform_scope_value:
+                raise ValueError("active model scope does not match the requested platform scope")
+        elif self.data_mode == "synthetic":
+            registered, old_bundle = _resolve_champion_bundle(client, self.config["model_name"])
+        else:
+            # A tenant with no activated scoped release starts as an explicit
+            # bootstrap candidate; never compare against another tenant's alias.
+            registered, old_bundle = None, None
         if registered is not None:
             champion_version = str(registered.version)
             champion_metadata = {
@@ -572,14 +638,26 @@ class TrainFlow(FlowSpec):
             self.candidate_metadata,
             self.config,
             lineage_passed=bool(
-                self.lineage.get("dvc_pointer_sha256")
-                and self.lineage.get("complete_data_checksums")
-                and self.lineage.get("data_manifest_sha256")
-                and self.lineage.get("dvc_directory_verification", {}).get("passed")
+                (self.data_mode == "platform" and self.lineage.get("verified_platform_export")
+                 and self.lineage.get("data_manifest_sha256")
+                 and self.lineage.get("platform_snapshot_sha256")
+                 and self.lineage.get("platform_outcomes_sha256"))
+                or (self.data_mode == "platform-fixture" and self.lineage.get("synthetic_fixture")
+                    and self.lineage.get("data_manifest_sha256")
+                    and self.lineage.get("platform_snapshot_sha256")
+                    and self.lineage.get("platform_outcomes_sha256"))
+                or (self.data_mode == "synthetic" and self.lineage.get("dvc_pointer_sha256")
+                    and self.lineage.get("complete_data_checksums")
+                    and self.lineage.get("data_manifest_sha256")
+                    and self.lineage.get("dvc_directory_verification", {}).get("passed"))
             ),
             champion=champion_metadata,
         )
         self.gate_report["champion_version"] = champion_version
+        if self.data_mode in {"platform", "platform-fixture"}:
+            self.gate_report["platform_scope"] = self.platform_scope_value
+            self.gate_report["platform_snapshot_sha256"] = self.lineage["platform_snapshot_sha256"]
+            self.gate_report["bootstrap_candidate"] = self.active_model_version is None
         self.gate_report["mlflow_run_id"] = self.mlflow_run_id
         self.gate_report["metaflow_run_id"] = self.flow_run_id
         gate_path = _json_dump(Path(self.report_dir) / "gate_report.json", self.gate_report)

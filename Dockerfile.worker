@@ -1,0 +1,34 @@
+# Combined private worker. Shared dependencies use the dropout lock; unique
+# plagiarism packages retain their checked-in hashes from the plagiarism lock.
+FROM --platform=linux/arm64 python@sha256:a83ba18aef0f865b1a4a611c2cf460fe446f2795673bbb9fe43be570439e3b39
+
+WORKDIR /app
+COPY requirements.lock.txt ./requirements.lock.txt
+COPY plagiarism-runtime/requirements.lock.txt ./plagiarism-requirements.lock.txt
+COPY scripts/filter_worker_requirements.py ./filter_worker_requirements.py
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install --require-hashes -r requirements.lock.txt \
+    && python filter_worker_requirements.py requirements.lock.txt plagiarism-requirements.lock.txt /tmp/plagiarism-extra.lock.txt \
+    && python -m pip install --require-hashes --no-deps -r /tmp/plagiarism-extra.lock.txt
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app/src \
+    XDG_CACHE_HOME=/tmp/.cache \
+    MPLCONFIGDIR=/tmp/matplotlib \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
+
+COPY pyproject.toml ./
+COPY src/ ./src/
+COPY flows/ ./flows/
+COPY scripts/ ./scripts/
+COPY config/ ./config/
+
+ARG RUNTIME_UID=10001
+ARG RUNTIME_GID=10001
+RUN if ! getent group "${RUNTIME_GID}" >/dev/null; then groupadd --gid "${RUNTIME_GID}" appgroup; fi \
+    && useradd --no-log-init --uid "${RUNTIME_UID}" --gid "${RUNTIME_GID}" --create-home --home-dir /home/appuser --shell /usr/sbin/nologin appuser
+
+USER ${RUNTIME_UID}:${RUNTIME_GID}
+CMD ["python", "-m", "profassist_worker", "--help"]

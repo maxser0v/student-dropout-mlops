@@ -184,10 +184,25 @@ def run_score(args: argparse.Namespace) -> dict[str, Any]:
     display_flags = []
     for key, evidence_rows in sorted(grouped.items()):
         representative = max(evidence_rows, key=lambda item: (item["review_score"], item["evidence_id"]))
-        display_flags.append({"report_a": {"report_id": key[0][0], "version_id": key[0][1],
-                                             "start": key[0][2], "end": key[0][3]},
-                              "report_b": {"report_id": key[1][0], "version_id": key[1][1],
-                                             "start": key[1][2], "end": key[1][3]},
+        report_a = {"report_id": key[0][0], "version_id": key[0][1], "start": key[0][2], "end": key[0][3]}
+        report_b = {"report_id": key[1][0], "version_id": key[1][1], "start": key[1][2], "end": key[1][3]}
+        left = {"report_id": report_a["report_id"], "version_id": report_a["version_id"],
+                "start": report_a["start"], "end": report_a["end"], "text": None}
+        right = {"report_id": report_b["report_id"], "version_id": report_b["version_id"],
+                 "start": report_b["start"], "end": report_b["end"], "text": None}
+        if (representative["query_report_id"], representative["query_version_id"],
+                representative["query_start"], representative["query_end"]) == tuple(key[0]):
+            left["text"] = representative["query_excerpt"]
+            right["text"] = representative["source_excerpt"]
+        else:
+            left["text"] = representative["source_excerpt"]
+            right["text"] = representative["query_excerpt"]
+        display_flags.append({"report_a": report_a, "report_b": report_b,
+                              "left_report_id": left["report_id"], "left_version_id": left["version_id"],
+                              "right_report_id": right["report_id"], "right_version_id": right["version_id"],
+                              "passages": [{"left": left, "right": right,
+                                            "score": float(representative["review_score"]),
+                                            "score_scale": "0_to_1"}],
                               "representative": representative,
                               "evidence_ids": sorted({item["evidence_id"] for item in evidence_rows}),
                               "evidence_count": len({item["evidence_id"] for item in evidence_rows})})

@@ -16,16 +16,16 @@ from dropout.features import make_features
 from dropout.monitor import (
     MONITORED_FEATURES,
     PROFILE_TAG,
+    _json_bytes,
     _outcome_metrics,
     calculate_psi,
     create_reference_profile,
     load_verified_reference_profile,
+    monitor_file,
     monitor_frame,
     profile_from_snapshot_export,
-    _json_bytes,
-    monitor_file,
 )
-from dropout.validation import FEATURE_COLUMNS, TRAIN_COHORTS, KEY_COLUMNS
+from dropout.validation import FEATURE_COLUMNS, KEY_COLUMNS, TRAIN_COHORTS
 
 
 class FakeProbabilityModel:
@@ -91,6 +91,29 @@ def test_profile_uses_training_snapshots_only_and_records_fixed_bins() -> None:
         summary = profile["features"][feature]
         assert sum(summary["bin_counts"]) == summary["valid_reference_count"]
         assert sum(summary["bin_proportions"]) == pytest.approx(1.0)
+
+
+def test_profile_uses_scoped_manifest_train_cohorts_and_hashes() -> None:
+    fixture_root = ROOT / "fixtures" / "profassist" / "dropout-training"
+    manifest_path = fixture_root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    bundle = {
+        **_bundle(),
+        "lineage": {
+            "data_manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+            "platform_scope": manifest["platform_scope"],
+            "platform_export_id": manifest["export_id"],
+            "split": manifest["split"],
+        },
+    }
+
+    profile = profile_from_snapshot_export(fixture_root, bundle)
+
+    assert profile["train_cohorts"] == manifest["split"]["train"] == ["2024_S1"]
+    assert profile["train_rows"] == 40
+    assert profile["platform_scope"] == manifest["platform_scope"]
+    assert profile["platform_export_id"] == manifest["export_id"]
+    assert profile["data_manifest_sha256"] == bundle["lineage"]["data_manifest_sha256"]
 
 
 def test_clean_reference_distribution_has_negligible_psi() -> None:
