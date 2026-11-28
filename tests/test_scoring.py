@@ -11,7 +11,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from dropout.score import load_verified_bundle, score_frame, write_csv_atomically
+from dropout.score import load_verified_bundle, score_explanations, score_frame, write_csv_atomically
+from dropout.training import build_pipeline
 from dropout.validation import FEATURE_COLUMNS
 
 
@@ -194,3 +195,16 @@ def test_verified_bundle_rejects_release_tampering(
             expected_target_version=expected_target,
             expected_feature_schema_version=expected_schema,
         )
+
+
+def test_score_explanations_rank_fitted_contributions_with_missingness() -> None:
+    features = pd.DataFrame({"engagement": [0., 1., 2., 3., 4., 5.],
+                             "attendance": [float("nan"), 2., 3., 4., 5., 6.]})
+    model = build_pipeline().fit(features, [1, 1, 1, 0, 0, 0])
+    row = score_explanations(model, features)[0]
+    assert {factor["feature"] for factor in row} == {"engagement", "attendance"}
+    assert row[0]["effect"] > 0
+    assert next(factor for factor in row if factor["feature"] == "attendance")["value"] is None
+    assert sum(factor["effect"] for factor in row) == pytest.approx(
+        model.decision_function(features)[0] - model.named_steps["classifier"].intercept_[0]
+    )
