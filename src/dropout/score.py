@@ -37,6 +37,37 @@ def load_config(path: str | Path) -> dict[str, Any]:
     return config
 
 
+def score_explanations(model: Any, features: pd.DataFrame) -> list[list[dict[str, Any]]]:
+    """Attribute the fitted logistic score relative to the scaler's training baseline."""
+    if tuple(getattr(model, "named_steps", {})) != ("imputer", "scaler", "classifier"):
+        return [[] for _ in range(len(features))]
+    imputer = model.named_steps["imputer"]
+    scaler = model.named_steps["scaler"]
+    classifier = model.named_steps["classifier"]
+    if not np.array_equal(classifier.classes_, [0, 1]):
+        return [[] for _ in range(len(features))]
+
+    names = imputer.get_feature_names_out(features.columns)
+    contributions = scaler.transform(imputer.transform(features)) * classifier.coef_[0]
+    indexes = {name: i for i, name in enumerate(features.columns)}
+    grouped = np.zeros(features.shape)
+    for name, values in zip(names, contributions.T, strict=True):
+        grouped[:, indexes[name.removeprefix("missingindicator_")]] += values
+
+    result = []
+    for raw, effects in zip(features.itertuples(index=False, name=None), grouped, strict=True):
+        strongest = sorted(range(len(raw)), key=lambda i: abs(effects[i]), reverse=True)[:3]
+        result.append([
+            {
+                "feature": features.columns[i],
+                "value": None if pd.isna(raw[i]) else float(raw[i]),
+                "effect": float(effects[i]),
+            }
+            for i in strongest if abs(effects[i]) > 1e-10
+        ])
+    return result
+
+
 def score_frame(
     snapshots: pd.DataFrame,
     model: Any,
@@ -45,6 +76,7 @@ def score_frame(
     *,
     predicted_at: str | None = None,
     batch_id: str | None = None,
+    include_explanations: bool = False,
 ) -> pd.DataFrame:
     """Validate every row and return the complete prediction contract."""
     validate_snapshot_frame(snapshots)
@@ -69,6 +101,10 @@ def score_frame(
     output["feature_schema_version"] = str(bundle["feature_schema_version"])
     output["training_data_hash"] = training_hash
     output["batch_id"] = identifier
+    if include_explanations:
+        output["explanation"] = [
+            json.dumps(row, allow_nan=False) for row in score_explanations(model, features)
+        ]
     return output
 
 
@@ -104,6 +140,7 @@ def score_file(
     *,
     tracking_uri: str,
     config_path: str | Path,
+    include_explanations: bool = False,
 ) -> dict[str, Any]:
     """Run one all-or-nothing batch and atomically persist its CSV result."""
     source = Path(input_path).expanduser().resolve()
@@ -127,7 +164,9 @@ def score_file(
         expected_target_version=str(config["target"]["version"]),
         expected_feature_schema_version=str(config["feature_schema"]["version"]),
     )
-    result = score_frame(snapshots, model, bundle, str(model_version))
+    result = score_frame(
+        snapshots, model, bundle, str(model_version), include_explanations=include_explanations
+    )
     destination = write_csv_atomically(result, output_path)
     return {
         "status": "scored",

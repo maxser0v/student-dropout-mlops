@@ -188,7 +188,7 @@ def _dropout_score(envelope: dict[str, Any], work: Path) -> dict[str, Any]:
     bundle = _verify_dropout_scope(ctx, config["model_name"])
     summary = score_file(source, output, _required(ctx, "version"),
                          tracking_uri=_required(ctx, "tracking_uri"),
-                         config_path=config_path)
+                         config_path=config_path, include_explanations=True)
     import pandas as pd
     frame = pd.read_csv(output, dtype=str, keep_default_na=False)
     return {"summary": {**{k: v for k, v in summary.items() if k != "output_path"},
@@ -280,6 +280,13 @@ def _dropout_train(envelope: dict[str, Any], work: Path) -> dict[str, Any]:
     from dropout.score import load_config
     ctx, payload = envelope["context"], envelope["payload"]
     config_path = ctx.get("config_path", ROOT / "config/model.yaml")
+    if ctx.get("fixture"):
+        import yaml
+
+        config = load_config(ROOT / "config/model.yaml")
+        config["model_name"] = "student-dropout-fixture"
+        config_path = _safe_work_file(work, "fixture-config.yaml")
+        config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
     config = load_config(config_path)
     if _required(ctx, "model_name") != config["model_name"]:
         raise ValueError("requested dropout model name does not match the trusted training config")
@@ -308,7 +315,7 @@ def _dropout_train(envelope: dict[str, Any], work: Path) -> dict[str, Any]:
     result.pop("report_dir", None)
     monitoring_profile = None
     candidate_version = result.get("candidate_version")
-    if result.get("gate_passed") is True and candidate_version:
+    if result.get("gate_passed") is True and candidate_version and not ctx.get("fixture"):
         from dropout.monitor import create_and_register_reference_profile
 
         profile_path = _safe_work_file(
